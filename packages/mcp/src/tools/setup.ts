@@ -64,13 +64,21 @@ function parsePorts(ports: string[]): Array<{ host: number; container: number }>
 
 function buildHealthcheckCmd(svc: ServiceDefinition) {
   if (!svc.container.healthcheck) return undefined;
+  const hcPort = svc.container.healthcheck.port ?? extractContainerPort(svc.container.ports);
+  const portSuffix = hcPort ? `:${hcPort}` : '';
   return {
-    cmd: `wget -qO- http://localhost${svc.container.healthcheck.path} || exit 1`,
+    cmd: `wget -qO- http://localhost${portSuffix}${svc.container.healthcheck.path} || exit 1`,
     interval: svc.container.healthcheck.interval ?? '10s',
     timeout: svc.container.healthcheck.timeout ?? '5s',
     retries: svc.container.healthcheck.retries ?? 10,
     startPeriod: svc.container.healthcheck.startPeriod ?? '30s',
   };
+}
+
+function extractContainerPort(ports: string[]): number | undefined {
+  if (ports.length === 0) return undefined;
+  const parts = ports[0]!.split(':');
+  return parts.length >= 2 ? parseInt(parts[1]!, 10) : parseInt(parts[0]!, 10);
 }
 
 /**

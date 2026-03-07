@@ -9,6 +9,7 @@
 import {
   stopContainer,
   removeNetwork,
+  findContainersByLabel,
   MultiServiceOrchestrator,
 } from 'argusai-core';
 import { SessionManager, SessionError } from '../session.js';
@@ -74,13 +75,23 @@ export async function handleClean(
   const orchestrator = new MultiServiceOrchestrator();
   const services = orchestrator.normalizeServices(session.config);
 
-  // Collect all container names to clean — both from config and session tracking
+  // Collect all container names — from config, session tracking, and Docker labels
   const containerNames = new Set<string>();
   for (const svc of services) {
     containerNames.add(svc.container.name);
   }
   for (const [name] of session.containerIds) {
     containerNames.add(name);
+  }
+  try {
+    const labeledContainers = await findContainersByLabel(
+      `argusai.project=${session.config.project.name}`,
+    );
+    for (const name of labeledContainers) {
+      containerNames.add(name);
+    }
+  } catch {
+    // Best-effort: label-based lookup may fail if Docker is unreachable
   }
 
   // Stop containers (best-effort)

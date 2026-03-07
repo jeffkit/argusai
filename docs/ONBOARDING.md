@@ -102,6 +102,7 @@ service:
       DATABASE_URL: "{{env.DATABASE_URL}}"  # 引用环境变量
     healthcheck:
       path: /health               # 你的健康检查端点
+      port: 3000                  # 容器内端口（可选，默认从 ports 自动推断）
       interval: 5s
       timeout: 3s
       retries: 10

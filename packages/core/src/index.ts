@@ -49,6 +49,7 @@ export {
   buildBuildArgs,
   buildRunArgs,
   dockerExec,
+  findContainersByLabel,
 } from './docker-engine.js';
 export type { DockerBuildOptions, DockerRunOptions, ArgusDockerLabels } from './docker-engine.js';
 export { getDockerHostArgs, isDockerRemote } from './docker-engine.js';

@@ -499,6 +499,17 @@ export async function getContainerInfo(name: string): Promise<Record<string, str
   }
 }
 
+/**
+ * Find containers by label filter. Returns container names.
+ */
+export async function findContainersByLabel(label: string): Promise<string[]> {
+  const result = await safeExecFileAsync(
+    'docker', ['ps', '-a', '--filter', `label=${label}`, '--format', '{{.Names}}'],
+  );
+  if (!result) return [];
+  return result.split('\n').filter(n => n.trim().length > 0);
+}
+
 // =====================================================================
 // Container Log Streaming
 // =====================================================================

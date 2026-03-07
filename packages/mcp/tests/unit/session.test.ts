@@ -57,7 +57,7 @@ describe('SessionManager', () => {
       };
       const session = manager.create('/project/b', config, '/project/b/e2e.yaml');
 
-      expect(session.networkName).toBe('e2e-network');
+      expect(session.networkName).toBe('argusai-test-network');
     });
   });
 
@@ -144,12 +144,14 @@ describe('SessionManager', () => {
     it('should reject invalid transitions', () => {
       const manager = new SessionManager();
       manager.create('/project/a', makeConfig(), '/path');
+      manager.transition('/project/a', 'running');
 
-      expect(() => manager.transition('/project/a', 'running'))
+      // running → initialized is not a valid transition
+      expect(() => manager.transition('/project/a', 'initialized'))
         .toThrow(SessionError);
 
       try {
-        manager.transition('/project/a', 'running');
+        manager.transition('/project/a', 'initialized');
       } catch (err) {
         expect((err as SessionError).code).toBe('INVALID_STATE');
       }

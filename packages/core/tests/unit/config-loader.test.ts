@@ -194,8 +194,8 @@ describe('config-loader', () => {
 
       const config = await loadConfig(configPath);
       expect(config.project.name).toBe('test-project');
-      expect(config.service.build.dockerfile).toBe('Dockerfile');
-      expect(config.service.container.ports).toEqual(['8080:3000']);
+      expect(config.service!.build.dockerfile).toBe(path.resolve(tmpDir, 'Dockerfile'));
+      expect(config.service!.container.ports).toEqual(['8080:3000']);
     });
 
     it('should load a full config with all optional fields', async () => {
@@ -221,7 +221,7 @@ describe('config-loader', () => {
 
       const config = await loadConfig(configPath);
       expect(config.version).toBe('1');
-      expect(config.service.build.context).toBe('.');
+      expect(config.service!.build.context).toBe(path.resolve(tmpDir, '.'));
     });
 
     it('should load .env file from the config directory', async () => {
@@ -349,6 +349,118 @@ describe('config-loader', () => {
       } finally {
         process.chdir(originalCwd);
       }
+    });
+
+    it('should resolve build paths to absolute (relative to config dir)', async () => {
+      const configPath = path.join(tmpDir, 'e2e.yaml');
+      await fs.writeFile(configPath, minimalYaml(), 'utf-8');
+
+      const config = await loadConfig(configPath);
+      expect(path.isAbsolute(config.service!.build.dockerfile)).toBe(true);
+      expect(path.isAbsolute(config.service!.build.context)).toBe(true);
+      expect(config.service!.build.dockerfile).toBe(path.resolve(tmpDir, 'Dockerfile'));
+      expect(config.service!.build.context).toBe(path.resolve(tmpDir, '.'));
+    });
+
+    it('should resolve build paths for multi-service config', async () => {
+      const configContent = [
+        'version: "1"',
+        'project:',
+        '  name: multi-svc',
+        'services:',
+        '  - name: backend',
+        '    build:',
+        '      dockerfile: docker/Dockerfile.backend',
+        '      context: "."',
+        '      image: backend:latest',
+        '    container:',
+        '      name: backend',
+        '      ports:',
+        '        - "8080:8080"',
+        '  - name: frontend',
+        '    build:',
+        '      dockerfile: docker/Dockerfile.frontend',
+        '      context: "./frontend"',
+        '      image: frontend:latest',
+        '    container:',
+        '      name: frontend',
+        '      ports:',
+        '        - "3000:3000"',
+      ].join('\n');
+      const configPath = path.join(tmpDir, 'e2e.yaml');
+      await fs.writeFile(configPath, configContent, 'utf-8');
+
+      const config = await loadConfig(configPath);
+      expect(config.services).toHaveLength(2);
+      expect(config.services![0]!.build.dockerfile).toBe(path.resolve(tmpDir, 'docker/Dockerfile.backend'));
+      expect(config.services![0]!.build.context).toBe(path.resolve(tmpDir, '.'));
+      expect(config.services![1]!.build.context).toBe(path.resolve(tmpDir, './frontend'));
+    });
+
+    it('should accept services in object format (docker-compose style)', async () => {
+      const configContent = [
+        'version: "1"',
+        'project:',
+        '  name: object-services',
+        'services:',
+        '  backend:',
+        '    build:',
+        '      dockerfile: Dockerfile',
+        '      context: "."',
+        '      image: backend:latest',
+        '    container:',
+        '      name: backend-app',
+        '      ports:',
+        '        - "8080:8080"',
+        '  redis:',
+        '    build:',
+        '      dockerfile: Dockerfile.redis',
+        '      context: "."',
+        '      image: redis:latest',
+        '    container:',
+        '      name: redis-cache',
+        '      ports:',
+        '        - "6379:6379"',
+      ].join('\n');
+      const configPath = path.join(tmpDir, 'e2e.yaml');
+      await fs.writeFile(configPath, configContent, 'utf-8');
+
+      const config = await loadConfig(configPath);
+      expect(config.services).toHaveLength(2);
+      expect(config.services![0]!.name).toBe('backend');
+      expect(config.services![1]!.name).toBe('redis');
+    });
+  });
+
+  describe('HealthcheckSchema', () => {
+    it('should accept optional port field', () => {
+      const result = E2EConfigSchema.parse({
+        project: { name: 'test' },
+        service: {
+          build: { dockerfile: 'Dockerfile', image: 'test:latest' },
+          container: {
+            name: 'test',
+            ports: ['8080:3000'],
+            healthcheck: { path: '/health', port: 8080 },
+          },
+        },
+      });
+      expect(result.service!.container.healthcheck!.port).toBe(8080);
+    });
+
+    it('should work without port field (backward compatible)', () => {
+      const result = E2EConfigSchema.parse({
+        project: { name: 'test' },
+        service: {
+          build: { dockerfile: 'Dockerfile', image: 'test:latest' },
+          container: {
+            name: 'test',
+            ports: ['8080:3000'],
+            healthcheck: { path: '/health' },
+          },
+        },
+      });
+      expect(result.service!.container.healthcheck!.port).toBeUndefined();
     });
   });
 });

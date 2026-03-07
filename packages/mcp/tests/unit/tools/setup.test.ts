@@ -104,4 +104,70 @@ describe('handleSetup', () => {
       expect((err as SessionError).code).toBe('PORT_CONFLICT');
     }
   });
+
+  it('should use container port in healthcheck command (#2)', async () => {
+    const manager = new SessionManager();
+    const config: E2EConfig = {
+      version: '1',
+      project: { name: 'test-hc-port' },
+      service: {
+        build: { dockerfile: 'Dockerfile', context: '.', image: 'test:latest' },
+        container: {
+          name: 'test-app',
+          ports: ['18080:8080'],
+          healthcheck: { path: '/health', interval: '10s', timeout: '5s', retries: 10, startPeriod: '30s' },
+        },
+      },
+      network: { name: 'test-net' },
+      resilience: {
+        preflight: { enabled: false },
+        circuitBreaker: { enabled: false },
+      },
+    } as E2EConfig;
+    manager.create('/test/hc-port', config, '/test/hc-port/e2e.yaml');
+    manager.transition('/test/hc-port', 'built');
+
+    await handleSetup({ projectPath: '/test/hc-port' }, manager);
+
+    expect(startContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        healthcheck: expect.objectContaining({
+          cmd: expect.stringContaining(':8080/health'),
+        }),
+      }),
+    );
+  });
+
+  it('should use explicit healthcheck port when specified (#2)', async () => {
+    const manager = new SessionManager();
+    const config: E2EConfig = {
+      version: '1',
+      project: { name: 'test-hc-explicit' },
+      service: {
+        build: { dockerfile: 'Dockerfile', context: '.', image: 'test:latest' },
+        container: {
+          name: 'test-app',
+          ports: ['18080:8080'],
+          healthcheck: { path: '/health', port: 3000, interval: '10s', timeout: '5s', retries: 10, startPeriod: '30s' },
+        },
+      },
+      network: { name: 'test-net' },
+      resilience: {
+        preflight: { enabled: false },
+        circuitBreaker: { enabled: false },
+      },
+    } as E2EConfig;
+    manager.create('/test/hc-explicit', config, '/test/hc-explicit/e2e.yaml');
+    manager.transition('/test/hc-explicit', 'built');
+
+    await handleSetup({ projectPath: '/test/hc-explicit' }, manager);
+
+    expect(startContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        healthcheck: expect.objectContaining({
+          cmd: expect.stringContaining(':3000/health'),
+        }),
+      }),
+    );
+  });
 });

@@ -29,6 +29,7 @@ import { handlePatterns } from './tools/patterns.js';
 import { handleMockGenerate } from './tools/mock-generate.js';
 import { handleMockValidate } from './tools/mock-validate.js';
 import { handleResources } from './tools/resources.js';
+import { handleRebuild } from './tools/rebuild.js';
 
 /** Shared platform services injected into tool handlers. */
 export interface PlatformServices {
@@ -132,6 +133,7 @@ export function createServer(options?: CreateServerOptions): {
       projectPath: z.string().describe('Project path (must have active session)'),
       noCache: z.boolean().optional().describe('Disable Docker layer cache'),
       service: z.string().optional().describe('Build specific service (multi-service mode)'),
+      useExisting: z.boolean().optional().describe('Skip build if image already exists locally'),
     },
     async (params) => {
       try {
@@ -486,6 +488,24 @@ export function createServer(options?: CreateServerOptions): {
     async () => {
       try {
         const result = await handleResources(sessionManager);
+        return successResponse(result);
+      } catch (err) {
+        return handleError(err);
+      }
+    },
+  );
+
+  // Tool 22: argus_rebuild (convenience: clean → init → build → setup)
+  server.tool(
+    'argus_rebuild',
+    {
+      projectPath: z.string().describe('Absolute path to project directory containing e2e.yaml'),
+      noCache: z.boolean().optional().describe('Disable Docker layer cache for rebuild'),
+      configFile: z.string().optional().describe('Config filename override (default: e2e.yaml)'),
+    },
+    async (params) => {
+      try {
+        const result = await handleRebuild(params, sessionManager, platform);
         return successResponse(result);
       } catch (err) {
         return handleError(err);

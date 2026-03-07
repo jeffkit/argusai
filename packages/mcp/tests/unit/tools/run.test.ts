@@ -95,6 +95,31 @@ describe('handleRun', () => {
       .rejects.toThrow(SessionError);
   });
 
+  it('should allow test-only mode: run without services in initialized state (#4)', async () => {
+    const config: E2EConfig = {
+      version: '1',
+      project: { name: 'test-only' },
+      tests: {
+        suites: [
+          { id: 'api', name: 'API Tests', file: 'tests/api.yaml', runner: 'yaml' },
+        ],
+      },
+      network: { name: 'test-net' },
+    } as E2EConfig;
+    sessionManager.create('/test/test-only', config, '/test/test-only/e2e.yaml');
+
+    vi.mocked(executeYAMLSuite).mockImplementation(async function* () {
+      yield { type: 'suite_start', suite: 'API Tests', timestamp: Date.now() };
+      yield { type: 'case_pass', suite: 'API Tests', name: 'test 1', duration: 50, timestamp: Date.now() };
+      yield { type: 'suite_end', suite: 'API Tests', passed: 1, failed: 0, skipped: 0, duration: 50, timestamp: Date.now() };
+    } as any);
+
+    const result = await handleRun({ projectPath: '/test/test-only' }, sessionManager, formatter);
+
+    expect(result.status).toBe('passed');
+    expect(result.suites).toHaveLength(1);
+  });
+
   it('should filter suites by ID', async () => {
     createRunningSession(sessionManager);
 

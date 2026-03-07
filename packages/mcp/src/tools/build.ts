@@ -5,6 +5,7 @@
 
 import {
   buildImage,
+  dockerExec,
   PreflightChecker,
   ResilientDockerEngine,
   ArgusError,
@@ -64,7 +65,7 @@ function getServicesToBuild(config: E2EConfig, serviceFilter?: string): ServiceB
  * @throws {SessionError} SESSION_NOT_FOUND if not initialized, SERVICE_NOT_FOUND if filter matches nothing
  */
 export async function handleBuild(
-  params: { projectPath: string; noCache?: boolean; service?: string },
+  params: { projectPath: string; noCache?: boolean; service?: string; useExisting?: boolean },
   sessionManager: SessionManager,
   platform?: PlatformServices,
 ): Promise<BuildResult> {
@@ -109,6 +110,23 @@ export async function handleBuild(
     const buildStart = Date.now();
     let lineNumber = 0;
     let buildError: string | undefined;
+    const recentLogs: string[] = [];
+    const MAX_ERROR_LOG_LINES = 30;
+
+    if (params.useExisting) {
+      try {
+        await dockerExec(['image', 'inspect', target.build.image]);
+        results.push({
+          name: target.name,
+          image: target.build.image,
+          status: 'success',
+          duration: Date.now() - buildStart,
+        });
+        continue;
+      } catch {
+        // Image doesn't exist, proceed with build
+      }
+    }
 
     try {
       const buildOpts = {
@@ -127,6 +145,10 @@ export async function handleBuild(
         bus?.emit('build', { event: event.type, data: event });
         if (event.type === 'build_log') {
           lineNumber++;
+          recentLogs.push(event.line);
+          if (recentLogs.length > MAX_ERROR_LOG_LINES) {
+            recentLogs.shift();
+          }
         }
         if (event.type === 'build_end' && !event.success) {
           buildError = event.error;
@@ -134,6 +156,10 @@ export async function handleBuild(
       }
     } catch (err) {
       buildError = (err as Error).message;
+    }
+
+    if (buildError && recentLogs.length > 0) {
+      buildError = `${buildError}\n--- Last ${recentLogs.length} lines of build output ---\n${recentLogs.join('\n')}`;
     }
 
     results.push({

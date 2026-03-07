@@ -50,7 +50,8 @@ export async function handleRun(
 ): Promise<RunResult> {
   const session = sessionManager.getOrThrow(params.projectPath);
 
-  if (session.state !== 'running') {
+  const isTestOnly = !session.config.service && (!session.config.services || session.config.services.length === 0);
+  if (session.state !== 'running' && !isTestOnly) {
     throw new SessionError('NOT_RUNNING', 'Environment not set up. Call argus_setup first.');
   }
 
@@ -95,7 +96,8 @@ export async function handleRunSuite(
 ): Promise<RunResult> {
   const session = sessionManager.getOrThrow(params.projectPath);
 
-  if (session.state !== 'running') {
+  const isTestOnly = !session.config.service && (!session.config.services || session.config.services.length === 0);
+  if (session.state !== 'running' && !isTestOnly) {
     throw new SessionError('NOT_RUNNING', 'Environment not set up. Call argus_setup first.');
   }
 

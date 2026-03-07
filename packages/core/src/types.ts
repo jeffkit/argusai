@@ -29,6 +29,8 @@ export type {
 export interface HealthcheckConfig {
   /** HTTP 健康检查路径 */
   path: string;
+  /** 容器内端口（未指定时从 container ports 自动推断） */
+  port?: number;
   /** 检查间隔 */
   interval?: string;
   /** 超时时间 */

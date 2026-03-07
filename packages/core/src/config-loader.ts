@@ -21,6 +21,7 @@ import { resolveObjectVariables } from './variable-resolver.js';
 /** Healthcheck configuration schema */
 export const HealthcheckSchema = z.object({
   path: z.string().describe('HTTP health check endpoint path'),
+  port: z.number().optional().describe('Container-internal port for health check (auto-detected from container ports if omitted)'),
   interval: z.string().default('10s').describe('Interval between health checks (e.g. "10s")'),
   timeout: z.string().default('5s').describe('Timeout per health check attempt (e.g. "5s")'),
   retries: z.number().default(10).describe('Number of consecutive failures before marking unhealthy'),
@@ -235,7 +236,15 @@ export const E2EConfigSchema = z.object({
     container: ServiceContainerSchema,
     vars: z.record(z.string()).optional().describe('Custom variables for template substitution'),
   }).optional().describe('Service under test (single service, backward compatible)'),
-  services: z.array(ServiceDefinitionSchema).optional().describe('Multiple services for multi-service orchestration'),
+  services: z.preprocess((val) => {
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      return Object.entries(val as Record<string, unknown>).map(([key, svc]) => ({
+        name: key,
+        ...(svc as Record<string, unknown>),
+      }));
+    }
+    return val;
+  }, z.array(ServiceDefinitionSchema).optional()).describe('Multiple services for multi-service orchestration'),
   mocks: z.record(MockServiceSchema).optional().describe('Mock service definitions keyed by name'),
   tests: z.object({
     suites: z.array(TestSuiteSchema).describe('Test suite definitions'),
@@ -326,7 +335,11 @@ export async function loadConfig(configPath?: string): Promise<E2EConfig> {
     throw new Error(`Configuration validation failed:\n${issues}`);
   }
 
-  return result.data as E2EConfig;
+  // 6. Resolve build paths to absolute (relative to e2e.yaml directory)
+  const validated = result.data as E2EConfig;
+  resolveBuildPathsInConfig(validated, configDir);
+
+  return validated;
 }
 
 // =====================================================================
@@ -393,4 +406,22 @@ function extractVars(raw: Record<string, unknown>): Record<string, string> {
   }
 
   return result;
+}
+
+/**
+ * Resolve build-related paths (dockerfile, context) to absolute paths
+ * relative to the config file directory. This ensures Docker commands
+ * work regardless of the process working directory.
+ */
+function resolveBuildPathsInConfig(config: E2EConfig, configDir: string): void {
+  if (config.service) {
+    config.service.build.dockerfile = path.resolve(configDir, config.service.build.dockerfile);
+    config.service.build.context = path.resolve(configDir, config.service.build.context);
+  }
+  if (config.services) {
+    for (const svc of config.services) {
+      svc.build.dockerfile = path.resolve(configDir, svc.build.dockerfile);
+      svc.build.context = path.resolve(configDir, svc.build.context);
+    }
+  }
 }
