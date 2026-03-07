@@ -1,6 +1,6 @@
 {
   "name": "argusai-core",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "type": "module",
   "description": "ArgusAI core engine — Docker orchestration, test runners, and assertion engine for AI-native E2E testing",
   "license": "MIT",

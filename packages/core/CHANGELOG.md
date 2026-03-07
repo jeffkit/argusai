@@ -1,5 +1,28 @@
 # argusai-core
 
+## 0.5.1
+
+### Patch Changes
+
+- fix: resolve 9 issues from E2E testing feedback
+
+  Bug fixes:
+
+  - Fix docker build path resolution — build paths now resolved to absolute paths relative to e2e.yaml
+  - Fix healthcheck hardcoded port 80 — auto-detects container port, supports explicit `port` field
+  - Add `useExisting` param to skip build when image already exists
+  - Include build output logs in error messages on failure
+
+  Design improvements:
+
+  - Enable test-only mode (run tests without services in initialized state)
+  - Support docker-compose style object format for `services` config
+  - Clean residual containers by Docker label in argus_clean
+
+  New features:
+
+  - Add `argus_rebuild` tool for one-step clean → init → build → setup
+
 ## 0.5.0
 
 ### Minor Changes
