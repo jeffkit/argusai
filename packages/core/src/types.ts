@@ -421,6 +421,74 @@ export interface PortAssertConfig {
   timeout?: string;
 }
 
+/** 浏览器动作类型 */
+export type BrowserActionType =
+  | 'goto'
+  | 'click'
+  | 'fill'
+  | 'type'
+  | 'press'
+  | 'select'
+  | 'check'
+  | 'uncheck'
+  | 'hover'
+  | 'focus'
+  | 'clear'
+  | 'waitForSelector'
+  | 'waitForURL'
+  | 'waitForLoadState'
+  | 'screenshot'
+  | 'evaluate'
+  | 'setLocalStorage'
+  | 'scrollTo';
+
+/** 浏览器操作配置 */
+export interface BrowserAction {
+  action: BrowserActionType;
+  /** 元素选择器 (CSS/text=/role= Playwright 选择器) */
+  selector?: string;
+  /** goto 的目标 URL */
+  url?: string;
+  /** fill/type 的输入值 */
+  value?: string;
+  /** press 的按键名 (e.g. "Enter", "Tab") */
+  key?: string;
+  /** select 的选项值或标签 */
+  option?: string | { value?: string; label?: string; index?: number };
+  /** evaluate 的 JavaScript 代码 */
+  script?: string;
+  /** screenshot 的保存路径 */
+  path?: string;
+  /** setLocalStorage 的键值对 */
+  storage?: Record<string, string>;
+  /** 操作超时（默认 30s） */
+  timeout?: string;
+  /** waitForLoadState 的状态 */
+  state?: 'load' | 'domcontentloaded' | 'networkidle';
+  /** scrollTo 的坐标或元素 */
+  position?: { x: number; y: number };
+}
+
+/** 页面状态断言 */
+export interface PageExpect {
+  /** URL 断言 */
+  url?: string | { contains?: string; notContains?: string; matches?: string; startsWith?: string };
+  /** 页面标题断言 */
+  title?: string | { contains?: string; matches?: string };
+  /** 应可见的元素选择器列表 */
+  visible?: string[];
+  /** 应不可见/不存在的元素选择器列表 */
+  hidden?: string[];
+  /** 特定选择器的文本内容断言 */
+  text?: Record<string, string | { contains?: string; matches?: string }>;
+  /** 特定选择器的输入值断言 */
+  inputValue?: Record<string, string>;
+  /** 特定选择器的元素数量断言 */
+  count?: Record<string, number | { gt?: number; gte?: number; lt?: number; lte?: number }>;
+  /** evaluate 的返回值断言 */
+  result?: unknown;
+}
+
 /** YAML 测试用例步骤 */
 export interface TestStep {
   name: string;
@@ -461,6 +529,8 @@ export interface TestStep {
     /** 最大监听时长（默认 10s） */
     timeout?: string;
   };
+  /** 浏览器操作（与 request/exec/sse 互斥） */
+  browser?: BrowserAction;
   expect?: {
     status?: number | number[];
     headers?: Record<string, unknown>;
@@ -505,6 +575,8 @@ export interface TestStep {
       /** 最后一个事件的断言 */
       last?: Record<string, unknown>;
     };
+    /** 浏览器页面状态断言 */
+    page?: PageExpect;
   };
   /** 保存响应变量 */
   save?: Record<string, string>;

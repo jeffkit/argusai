@@ -74,6 +74,9 @@ export { ExecRunner } from './runners/exec-runner.js';
 export { PytestRunner } from './runners/pytest-runner.js';
 export { PlaywrightRunner } from './runners/playwright-runner.js';
 
+// Browser Executor (YAML browser step support)
+export { BrowserSession } from './browser-executor.js';
+
 // Diagnostics
 export { DiagnosticCollector, formatRestartHistory } from './diagnostics.js';
 export type { DiagnosticCollectorOptions } from './diagnostics.js';

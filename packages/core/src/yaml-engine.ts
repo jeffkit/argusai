@@ -11,11 +11,12 @@ import fs from 'node:fs/promises';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
-import type { YAMLTestSuite, TestStep, TestEvent, VariableContext, DiagnosticReport, RetryPolicy, AttemptResult } from './types.js';
+import type { YAMLTestSuite, TestStep, TestEvent, VariableContext, DiagnosticReport, RetryPolicy, AttemptResult, BrowserAction, PageExpect } from './types.js';
 import { resolveVariables, resolveObjectVariables } from './variable-resolver.js';
 import { assertStatus, assertHeaders, assertBody } from './assertion-engine.js';
 import { DiagnosticCollector } from './diagnostics.js';
 import { RetryExecutor, resolveRetryPolicy } from './retry-engine.js';
+import { BrowserSession } from './browser-executor.js';
 
 const execFileAsync = promisify(execFileCb);
 
@@ -43,6 +44,10 @@ export interface YAMLEngineOptions {
   globalRetryPolicy?: RetryPolicy;
   /** Suite-level retry policy (from suite config) */
   suiteRetryPolicy?: RetryPolicy;
+  /** Run browser in headless mode (default: true) */
+  browserHeadless?: boolean;
+  /** Externally provided browser session (for reuse across suites) */
+  browserSession?: BrowserSession;
 }
 
 // =====================================================================
@@ -185,6 +190,20 @@ export async function* executeYAMLSuite(
 
   const defaultTimeout = options.defaultTimeout ?? 30_000;
 
+  // ---- Browser session (lazy, shared across all steps in the suite) ----
+  const hasBrowserSteps =
+    suite.cases.some(c => !!c.browser) ||
+    (suite.setup && suite.setup.some(s => 'browser' in s)) ||
+    (suite.teardown && suite.teardown.some(s => 'browser' in s));
+
+  let browserSession: BrowserSession | undefined = options.browserSession;
+  if (hasBrowserSteps && !browserSession) {
+    browserSession = new BrowserSession({
+      baseUrl: options.baseUrl,
+      headless: options.browserHeadless ?? true,
+    });
+  }
+
   // ---- Setup ----
   if (suite.setup) {
     for (const step of suite.setup) {
@@ -225,7 +244,7 @@ export async function* executeYAMLSuite(
       // Regular setup step (TestStep)
       const testStep = step as TestStep;
       try {
-        await executeStep(testStep, options.baseUrl, ctx, defaultTimeout, options.containerName);
+        await executeStep(testStep, options.baseUrl, ctx, defaultTimeout, options.containerName, browserSession);
         yield { type: 'log', level: 'info', message: `Setup: ${testStep.name} ✓`, timestamp: Date.now() };
       } catch (err) {
         if (testStep.ignoreError) {
@@ -274,7 +293,7 @@ export async function* executeYAMLSuite(
         await sleep(delayMs);
       }
 
-      const errors = await executeStep(testCase, options.baseUrl, ctx, defaultTimeout, options.containerName);
+      const errors = await executeStep(testCase, options.baseUrl, ctx, defaultTimeout, options.containerName, browserSession);
       if (errors.length > 0) {
         throw new Error(errors.join('\n'));
       }
@@ -339,7 +358,7 @@ export async function* executeYAMLSuite(
   if (suite.teardown) {
     for (const step of suite.teardown) {
       try {
-        await executeStep(step, options.baseUrl, ctx, defaultTimeout, options.containerName);
+        await executeStep(step, options.baseUrl, ctx, defaultTimeout, options.containerName, browserSession);
         yield { type: 'log', level: 'info', message: `Teardown: ${step.name} ✓`, timestamp: Date.now() };
       } catch (err) {
         if (!step.ignoreError) {
@@ -347,6 +366,11 @@ export async function* executeYAMLSuite(
         }
       }
     }
+  }
+
+  // ---- Close browser session (only if we created it) ----
+  if (browserSession && !options.browserSession) {
+    await browserSession.close();
   }
 
   yield {
@@ -365,7 +389,7 @@ export async function* executeYAMLSuite(
 // =====================================================================
 
 /**
- * Execute a single test step: send HTTP request, exec command, or file assertion.
+ * Execute a single test step: send HTTP request, exec command, browser action, or file assertion.
  *
  * @returns Array of error messages (empty if all assertions pass)
  */
@@ -375,6 +399,7 @@ async function executeStep(
   ctx: VariableContext,
   defaultTimeout: number,
   containerName?: string,
+  browserSession?: BrowserSession,
 ): Promise<string[]> {
   // Resolve variables in the step
   const resolvedStep = resolveObjectVariables(step, ctx) as TestStep;
@@ -404,9 +429,14 @@ async function executeStep(
     return executeExecStep(resolvedStep, containerName);
   }
 
+  // ── Browser step: Playwright browser actions ──
+  if (resolvedStep.browser) {
+    return executeBrowserStep(resolvedStep, ctx, browserSession);
+  }
+
   // ── HTTP request step ──
   if (!resolvedStep.request) {
-    return [`Step "${resolvedStep.name}" has no recognized step type (request, exec, file, process, port, or sse)`];
+    return [`Step "${resolvedStep.name}" has no recognized step type (request, exec, file, process, port, sse, or browser)`];
   }
 
   // Build the URL: prefer explicit url, otherwise baseUrl + path
@@ -598,6 +628,47 @@ function parseSSEChunk(chunk: string): SSEEvent[] {
 
   return events;
 }
+
+// =====================================================================
+// Internal: Browser Step Execution
+// =====================================================================
+
+async function executeBrowserStep(
+  step: TestStep,
+  ctx: VariableContext,
+  browserSession?: BrowserSession,
+): Promise<string[]> {
+  if (!browserSession) {
+    return [`Browser step "${step.name}" requires a browser session (suite contains browser steps but no session was created)`];
+  }
+
+  if (!step.browser) {
+    return [`Browser step "${step.name}" has no browser action defined`];
+  }
+
+  const errors: string[] = [];
+
+  // Execute the browser action
+  const { errors: actionErrors } = await browserSession.execute(step.browser, ctx);
+  errors.push(...actionErrors);
+
+  // Page-level assertions
+  if (step.expect?.page) {
+    const pageErrors = await browserSession.assertPage(step.expect.page);
+    errors.push(...pageErrors);
+  }
+
+  // Save variables from page state
+  if (step.save) {
+    await browserSession.saveVariables(step.save, ctx);
+  }
+
+  return errors;
+}
+
+// =====================================================================
+// Internal: SSE Step Execution
+// =====================================================================
 
 async function executeSSEStep(
   step: TestStep,

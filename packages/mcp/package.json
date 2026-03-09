@@ -1,6 +1,6 @@
 {
   "name": "argusai-mcp",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "type": "module",
   "description": "ArgusAI MCP server — expose E2E testing tools to AI coding agents via Model Context Protocol",
   "license": "MIT",
