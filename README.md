@@ -506,14 +506,14 @@ ArgusAI 提供 MCP Server，让 AI 编程助手（如 Cursor、Claude Desktop）
 
 ### 配置 Cursor
 
-在 Cursor 的 MCP 配置中添加：
+在项目根目录的 `.cursor/mcp.json`（或 Cursor 全局 MCP 配置）中添加：
 
 ```json
 {
   "mcpServers": {
     "argusai": {
-      "command": "node",
-      "args": ["<ARGUSAI_PATH>/packages/mcp/dist/index.js"]
+      "command": "npx",
+      "args": ["argusai-mcp"]
     }
   }
 }

@@ -1,11 +1,8 @@
 {
   "mcpServers": {
     "argusai": {
-      "command": "node",
-      "args": [
-        "<ABSOLUTE_PATH_TO_ARGUSAI>/packages/mcp/dist/index.js"
-      ],
-      "env": {}
+      "command": "npx",
+      "args": ["argusai-mcp"]
     }
   }
 }
