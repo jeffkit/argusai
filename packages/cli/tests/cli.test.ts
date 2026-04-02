@@ -64,7 +64,7 @@ describe('CLI', () => {
   describe('--version', () => {
     it('should show version number', () => {
       const output = runCLI(['--version']);
-      expect(output.trim()).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(output.trim()).toBe('0.8.0');
     });
   });
 
