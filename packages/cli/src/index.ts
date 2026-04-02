@@ -17,6 +17,21 @@ import { registerDashboard } from './commands/dashboard.js';
 import { registerLogs } from './commands/logs.js';
 import { registerMcpServer } from './commands/mcp-server.js';
 import { registerServer } from './commands/server.js';
+import { registerHistory } from './commands/history.js';
+import { registerFlaky } from './commands/flaky.js';
+import { registerDiagnose } from './commands/diagnose.js';
+import { registerTrends } from './commands/trends.js';
+import { registerCompare } from './commands/compare.js';
+import { registerPatterns } from './commands/patterns.js';
+import { registerDev } from './commands/dev.js';
+import { registerRebuild } from './commands/rebuild.js';
+import { registerResources } from './commands/resources.js';
+import { registerPreflight } from './commands/preflight.js';
+import { registerMockRequests } from './commands/mock-requests.js';
+import { registerMockGenerate } from './commands/mock-generate.js';
+import { registerMockValidate } from './commands/mock-validate.js';
+import { registerReportFix } from './commands/report-fix.js';
+import { registerResetCircuit } from './commands/reset-circuit.js';
 
 export function createProgram(): Command {
   const program = new Command();
@@ -39,6 +54,21 @@ export function createProgram(): Command {
   registerLogs(program);
   registerMcpServer(program);
   registerServer(program);
+  registerHistory(program);
+  registerFlaky(program);
+  registerDiagnose(program);
+  registerTrends(program);
+  registerCompare(program);
+  registerPatterns(program);
+  registerDev(program);
+  registerRebuild(program);
+  registerResources(program);
+  registerPreflight(program);
+  registerMockRequests(program);
+  registerMockGenerate(program);
+  registerMockValidate(program);
+  registerReportFix(program);
+  registerResetCircuit(program);
 
   return program;
 }
