@@ -14,6 +14,9 @@ importers:
       '@types/js-yaml':
         specifier: ^4.0.0
         version: 4.0.9
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
 
   packages/cli:
     dependencies:

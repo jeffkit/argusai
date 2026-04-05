@@ -445,8 +445,9 @@ export const testRoutes: FastifyPluginAsync = async (app) => {
     const { config } = getAppState();
     const query = request.query as { url?: string };
 
+    const openapiCfg = (config as unknown as { openapi?: { specUrl?: string } })?.openapi;
     const specUrl = query.url
-      || (config as unknown as Record<string, unknown>)?.openapi?.specUrl as string | undefined
+      || openapiCfg?.specUrl
       || `${config?.service?.vars?.base_url || 'http://localhost:4936'}/api-docs.json`;
 
     try {

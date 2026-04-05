@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
-    "@types/js-yaml": "^4.0.0"
+    "@types/js-yaml": "^4.0.0",
+    "typescript": "^5.6.0"
   }
 }
