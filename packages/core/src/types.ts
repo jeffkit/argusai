@@ -463,6 +463,8 @@ export interface BrowserAction {
   storage?: Record<string, string>;
   /** 操作超时（默认 30s） */
   timeout?: string;
+  /** 强制操作（跳过可操作性检查，如 click 时忽略遮挡元素） */
+  force?: boolean;
   /** waitForLoadState 的状态 */
   state?: 'load' | 'domcontentloaded' | 'networkidle';
   /** scrollTo 的坐标或元素 */
@@ -731,6 +733,10 @@ export interface RunConfig {
   target: string;
   env: Record<string, string>;
   timeout: number;
+  /** Config-level variables from service.vars (for {{config.*}} resolution) */
+  configVars?: Record<string, string>;
+  /** Runner-specific config file path (e.g. vitest.config.ts, playwright.config.ts) */
+  configFile?: string;
 }
 
 export interface TestRunner {

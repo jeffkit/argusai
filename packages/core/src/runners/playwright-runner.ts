@@ -75,6 +75,10 @@ export class PlaywrightRunner implements TestRunner {
 
     const args = ['playwright', 'test', '--reporter=json'];
 
+    if (config.configFile) {
+      args.push('--config', config.configFile);
+    }
+
     if (config.target) {
       args.push(config.target);
     }

@@ -238,6 +238,39 @@ export const tests = {
       method: 'PUT',
       body: JSON.stringify({ content }),
     }),
+
+  getDiscoveredEndpoints: () =>
+    request<{
+      endpoints: Array<{
+        group: string;
+        endpoints: Array<{
+          method: string;
+          path: string;
+          name: string;
+          body?: unknown;
+        }>;
+      }>;
+    }>('/tests/discovered-endpoints'),
+
+  getOpenApiEndpoints: (url?: string) =>
+    request<{
+      success: boolean;
+      specUrl?: string;
+      info?: { title?: string; version?: string };
+      endpoints?: Array<{
+        group: string;
+        endpoints: Array<{
+          method: string;
+          path: string;
+          name: string;
+          description?: string;
+          body?: unknown;
+          parameters?: Array<{ name: string; in: string; required?: boolean }>;
+        }>;
+      }>;
+      totalEndpoints?: number;
+      error?: string;
+    }>(`/tests/openapi-endpoints${url ? `?url=${encodeURIComponent(url)}` : ''}`),
 };
 
 // ==================== Config ====================

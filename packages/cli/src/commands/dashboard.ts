@@ -10,6 +10,7 @@
 import { Command } from 'commander';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // ── ANSI colours ──────────────────────────────────────────────────────
 const BOLD = '\x1b[1m';
@@ -17,6 +18,9 @@ const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
 const GRAY = '\x1b[90m';
 const RESET = '\x1b[0m';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export function registerDashboard(program: Command): void {
   program
@@ -27,7 +31,6 @@ export function registerDashboard(program: Command): void {
       const configPath = program.opts().config as string | undefined;
       const port = opts.port;
 
-      // Try to resolve dashboard package location
       const dashboardDir = path.resolve(__dirname, '../../../dashboard');
 
       console.log(`\n${BOLD}Preflight Dashboard${RESET}\n`);

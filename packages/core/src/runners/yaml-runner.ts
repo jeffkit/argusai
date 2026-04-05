@@ -37,7 +37,7 @@ export class YAMLRunner implements TestRunner {
     const baseUrl = config.env['BASE_URL'] ?? 'http://localhost:3000';
 
     const variables: VariableContext = {
-      config: {},
+      config: config.configVars ?? {},
       runtime: {},
       env: config.env,
     };

@@ -94,7 +94,7 @@ export class BrowserSession {
             errors.push('click action requires a "selector"');
             break;
           }
-          await page.locator(action.selector).click({ timeout });
+          await page.locator(action.selector).click({ timeout, force: action.force ?? false });
           break;
         }
 

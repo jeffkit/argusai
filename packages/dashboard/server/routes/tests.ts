@@ -383,6 +383,155 @@ export const testRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  /** 从测试 YAML 自动发现 API 端点 */
+  app.get('/discovered-endpoints', async () => {
+    const { configDir, config } = getAppState();
+    if (!config?.tests?.suites) return { endpoints: [] };
+
+    const fs = await import('fs');
+    const groupMap = new Map<string, Array<{ method: string; path: string; name: string; body?: unknown }>>();
+
+    for (const suite of config.tests.suites) {
+      if (!suite.file || suite.runner === 'playwright') continue;
+      const filePath = path.resolve(configDir, suite.file);
+      if (!fs.existsSync(filePath)) continue;
+
+      try {
+        const yamlSuite = await loadYAMLTests(filePath);
+        const groupName = suite.name;
+        const endpoints: Array<{ method: string; path: string; name: string; body?: unknown }> = [];
+        const seen = new Set<string>();
+
+        for (const tc of yamlSuite.cases) {
+          const tcAny = tc as unknown as Record<string, unknown>;
+          const req = tcAny.request as { method?: string; url?: string; path?: string; body?: unknown } | undefined;
+          if (!req) continue;
+
+          const rawUrl = req.url || req.path || '';
+          if (!rawUrl) continue;
+
+          const apiPath = rawUrl
+            .replace(/\{\{config\.base_url\}\}/g, '')
+            .replace(/\{\{runtime\.[^}]+\}\}/g, ':id')
+            .replace(/^\//, '');
+          if (!apiPath || apiPath.startsWith('http')) continue;
+
+          const method = (req.method || 'GET').toUpperCase();
+          const key = `${method}:${apiPath}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const ep: { method: string; path: string; name: string; body?: unknown } = {
+            method,
+            path: apiPath,
+            name: tc.name || `${method} ${apiPath}`,
+          };
+          if (req.body && method !== 'GET') ep.body = req.body;
+          endpoints.push(ep);
+        }
+
+        if (endpoints.length > 0) {
+          groupMap.set(groupName, endpoints);
+        }
+      } catch { /* skip broken files */ }
+    }
+
+    const groups = Array.from(groupMap.entries()).map(([group, endpoints]) => ({ group, endpoints }));
+    return { endpoints: groups };
+  });
+
+  /** 从 OpenAPI/Swagger 规范自动发现 API 端点 */
+  app.get('/openapi-endpoints', async (request) => {
+    const { config } = getAppState();
+    const query = request.query as { url?: string };
+
+    const specUrl = query.url
+      || (config as unknown as Record<string, unknown>)?.openapi?.specUrl as string | undefined
+      || `${config?.service?.vars?.base_url || 'http://localhost:4936'}/api-docs.json`;
+
+    try {
+      const res = await fetch(specUrl, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) {
+        return { success: false, error: `Failed to fetch OpenAPI spec: ${res.status}`, specUrl };
+      }
+
+      const spec = await res.json() as {
+        info?: { title?: string; version?: string };
+        paths?: Record<string, Record<string, {
+          tags?: string[];
+          summary?: string;
+          operationId?: string;
+          requestBody?: {
+            content?: Record<string, { schema?: unknown; example?: unknown }>;
+          };
+          parameters?: Array<{ name: string; in: string; required?: boolean; schema?: unknown }>;
+        }>>;
+      };
+
+      if (!spec.paths) {
+        return { success: false, error: 'No paths found in OpenAPI spec', specUrl };
+      }
+
+      const tagGroups = new Map<string, Array<{
+        method: string;
+        path: string;
+        name: string;
+        description?: string;
+        body?: unknown;
+        parameters?: Array<{ name: string; in: string; required?: boolean }>;
+      }>>();
+
+      for (const [apiPath, methods] of Object.entries(spec.paths)) {
+        for (const [method, operation] of Object.entries(methods)) {
+          if (['get', 'post', 'put', 'patch', 'delete'].indexOf(method.toLowerCase()) < 0) continue;
+
+          const tag = operation.tags?.[0] || 'Default';
+          if (!tagGroups.has(tag)) tagGroups.set(tag, []);
+
+          const cleanPath = apiPath.replace(/^\//, '');
+          const ep: {
+            method: string;
+            path: string;
+            name: string;
+            description?: string;
+            body?: unknown;
+            parameters?: Array<{ name: string; in: string; required?: boolean }>;
+          } = {
+            method: method.toUpperCase(),
+            path: cleanPath,
+            name: operation.summary || operation.operationId || `${method.toUpperCase()} ${apiPath}`,
+          };
+
+          if (operation.requestBody?.content) {
+            const jsonContent = operation.requestBody.content['application/json'];
+            if (jsonContent?.example) {
+              ep.body = jsonContent.example;
+            }
+          }
+
+          if (operation.parameters?.length) {
+            ep.parameters = operation.parameters.map(p => ({
+              name: p.name, in: p.in, required: p.required,
+            }));
+          }
+
+          tagGroups.get(tag)!.push(ep);
+        }
+      }
+
+      const groups = Array.from(tagGroups.entries()).map(([group, endpoints]) => ({ group, endpoints }));
+      return {
+        success: true,
+        specUrl,
+        info: spec.info,
+        endpoints: groups,
+        totalEndpoints: groups.reduce((sum, g) => sum + g.endpoints.length, 0),
+      };
+    } catch (err) {
+      return { success: false, error: `OpenAPI fetch failed: ${(err as Error).message}`, specUrl };
+    }
+  });
+
   /** SSE 实时测试输出 */
   app.get('/stream', async (request, reply) => {
     reply.raw.writeHead(200, {

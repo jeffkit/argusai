@@ -313,18 +313,30 @@ export async function* executeYAMLSuite(
           attempts: result.attempts,
         };
       } else {
-        failed++;
-        const diagnostics = await collectDiagnostics();
-        yield {
-          type: 'case_fail',
-          suite: suiteName,
-          name: caseName,
-          error: result.finalError ?? 'All retry attempts exhausted',
-          duration: Date.now() - caseStart,
-          timestamp: Date.now(),
-          diagnostics,
-          attempts: result.attempts,
-        };
+        if (testCase.ignoreError) {
+          passed++;
+          yield {
+            type: 'case_pass',
+            suite: suiteName,
+            name: `${caseName} (error ignored)`,
+            duration: Date.now() - caseStart,
+            timestamp: Date.now(),
+            attempts: result.attempts,
+          };
+        } else {
+          failed++;
+          const diagnostics = await collectDiagnostics();
+          yield {
+            type: 'case_fail',
+            suite: suiteName,
+            name: caseName,
+            error: result.finalError ?? 'All retry attempts exhausted',
+            duration: Date.now() - caseStart,
+            timestamp: Date.now(),
+            diagnostics,
+            attempts: result.attempts,
+          };
+        }
       }
     } else {
       try {
@@ -339,17 +351,28 @@ export async function* executeYAMLSuite(
           timestamp: Date.now(),
         };
       } catch (err) {
-        failed++;
-        const diagnostics = await collectDiagnostics();
-        yield {
-          type: 'case_fail',
-          suite: suiteName,
-          name: caseName,
-          error: (err as Error).message,
-          duration: Date.now() - caseStart,
-          timestamp: Date.now(),
-          diagnostics,
-        };
+        if (testCase.ignoreError) {
+          passed++;
+          yield {
+            type: 'case_pass',
+            suite: suiteName,
+            name: `${caseName} (error ignored)`,
+            duration: Date.now() - caseStart,
+            timestamp: Date.now(),
+          };
+        } else {
+          failed++;
+          const diagnostics = await collectDiagnostics();
+          yield {
+            type: 'case_fail',
+            suite: suiteName,
+            name: caseName,
+            error: (err as Error).message,
+            duration: Date.now() - caseStart,
+            timestamp: Date.now(),
+            diagnostics,
+          };
+        }
       }
     }
   }
