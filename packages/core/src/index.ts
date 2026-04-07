@@ -207,3 +207,11 @@ export {
   resolveBuildPaths,
 } from './workspace.js';
 export type { RepoInfo, WorkspaceInfo, SyncResult } from './workspace.js';
+
+// Worktree Detector
+export {
+  detectWorktree,
+  branchToSlug,
+  worktreeNamespaceSuffix,
+} from './worktree-detector.js';
+export type { WorktreeInfo } from './worktree-detector.js';

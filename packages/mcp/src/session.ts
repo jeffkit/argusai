@@ -10,9 +10,9 @@
  * auto-cleanup and per-session mutex.
  */
 
-import type { E2EConfig, SSEBus, PortMapping, CircuitBreakerState, HistoryConfig } from 'argusai-core';
+import type { E2EConfig, SSEBus, PortMapping, CircuitBreakerState, HistoryConfig, WorktreeInfo } from 'argusai-core';
 import type { HistoryStore, KnowledgeStore } from 'argusai-core';
-import { CircuitBreaker, createHistoryStore, HistoryRecorder, SQLiteHistoryStore, SQLiteKnowledgeStore, NoopKnowledgeStore, PortAllocator } from 'argusai-core';
+import { CircuitBreaker, createHistoryStore, HistoryRecorder, SQLiteHistoryStore, SQLiteKnowledgeStore, NoopKnowledgeStore, PortAllocator, detectWorktree } from 'argusai-core';
 
 // =====================================================================
 // Types
@@ -46,6 +46,8 @@ export interface ProjectSession {
   historyRecorder?: HistoryRecorder;
   /** Knowledge store for failure pattern diagnostics */
   knowledgeStore?: KnowledgeStore;
+  /** Git worktree info (if running inside a linked worktree) */
+  worktreeInfo?: WorktreeInfo;
 }
 
 const VALID_TRANSITIONS: Record<SessionState, SessionState[]> = {
@@ -66,36 +68,40 @@ const DEFAULT_TTL_MS = 2 * 60 * 60 * 1000;
  * Derive a Docker-safe network name for a project.
  *
  * Priority:
- * 1. `isolation.namespace` — explicit override
- * 2. `network.name` — backward-compatible explicit network name
- * 3. `argusai-<slug>-network` — default project-scoped name
+ * 1. `isolation.namespace` — explicit override (worktree suffix still appended)
+ * 2. `network.name` — backward-compatible explicit network name (no worktree suffix)
+ * 3. `argusai-<slug>[-<worktree>]-network` — default project-scoped name
  *
- * The slug lowercases the project name and replaces non-alphanumeric
- * characters with hyphens, so "My App" → "argusai-my-app-network".
+ * When running inside a git worktree, a suffix derived from the branch name
+ * is automatically appended to ensure Docker resource isolation across worktrees.
  */
-export function deriveNetworkName(config: E2EConfig): string {
-  if (config.isolation?.namespace) {
-    return `argusai-${config.isolation.namespace}-network`;
+export function deriveNetworkName(config: E2EConfig, worktreeInfo?: WorktreeInfo): string {
+  if (config.network?.name && !worktreeInfo?.isWorktree) {
+    return config.network.name;
   }
-  const slug = config.project.name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return `argusai-${slug}-network`;
+
+  const base = deriveNamespace(config, worktreeInfo);
+  return `argusai-${base}-network`;
 }
 
 /**
  * Derive the project namespace string (without -network suffix).
  * Used as a prefix for container names and Docker labels.
+ *
+ * When inside a worktree, appends the branch slug for isolation.
  */
-export function deriveNamespace(config: E2EConfig): string {
-  if (config.isolation?.namespace) {
-    return config.isolation.namespace;
+export function deriveNamespace(config: E2EConfig, worktreeInfo?: WorktreeInfo): string {
+  const projectSlug = config.isolation?.namespace
+    ?? config.project.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+
+  if (worktreeInfo?.isWorktree && worktreeInfo.slug) {
+    return `${projectSlug}-${worktreeInfo.slug}`;
   }
-  return config.project.name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+
+  return projectSlug;
 }
 /** Cleanup check interval: every 5 minutes */
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
@@ -193,6 +199,7 @@ export class SessionManager {
 
   /**
    * Create a new session for a project.
+   * Automatically detects git worktree context for environment isolation.
    */
   create(
     projectPath: string,
@@ -205,7 +212,8 @@ export class SessionManager {
       throw new SessionError('SESSION_EXISTS', `Session already exists for project: ${projectPath} (client: ${clientId})`);
     }
 
-    const networkName = config.network?.name ?? deriveNetworkName(config);
+    const worktreeInfo = detectWorktree(projectPath);
+    const networkName = deriveNetworkName(config, worktreeInfo);
     const now = Date.now();
 
     const cbConfig = config.resilience?.circuitBreaker;
@@ -260,6 +268,7 @@ export class SessionManager {
       historyStore,
       historyRecorder,
       knowledgeStore,
+      worktreeInfo: worktreeInfo.isWorktree ? worktreeInfo : undefined,
     };
 
     this.sessions.set(k, session);
