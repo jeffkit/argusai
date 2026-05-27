@@ -64,7 +64,10 @@ describe('CLI', () => {
   describe('--version', () => {
     it('should show version number', () => {
       const output = runCLI(['--version']);
-      expect(output.trim()).toBe('0.8.0');
+      const { version } = JSON.parse(
+        require('node:fs').readFileSync(require('node:path').resolve(__dirname, '../package.json'), 'utf-8')
+      ) as { version: string };
+      expect(output.trim()).toBe(version);
     });
   });
 
