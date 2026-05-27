@@ -23,6 +23,16 @@ export type {
   DiagnosticResult,
 } from './knowledge/types.js';
 
+// ==================== Server Config ====================
+
+/** Server sync configuration from e2e.yaml `server` section */
+export interface ServerConfig {
+  url: string;
+  apiKey: string;
+  team: string;
+  sync: 'auto' | 'manual' | 'disabled';
+}
+
 // ==================== 配置类型 ====================
 
 /** 健康检查配置 */
@@ -209,6 +219,8 @@ export interface E2EConfig {
   history?: _HistoryConfig;
   /** Multi-project isolation configuration */
   isolation?: IsolationConfig;
+  /** Server sync configuration (optional — omitting preserves local-only behavior) */
+  server?: ServerConfig;
 }
 
 // ==================== Isolation Config ====================
@@ -724,6 +736,37 @@ export interface AssertionResult {
   actual: unknown;
   passed: boolean;
   message: string;
+}
+
+/**
+ * Assertion plugin interface — allows external packages (e.g., Recursive agent)
+ * to register custom assertion types without modifying argusai-core.
+ *
+ * Register via `AssertionPluginRegistry.register(plugin)` before running tests.
+ *
+ * @example
+ * ```ts
+ * registry.register({
+ *   name: 'recursive-session',
+ *   assert(type, input, config) {
+ *     if (type !== 'recursive-session') return [];
+ *     return assertSession(input as string, config as SessionAssertionOptions);
+ *   }
+ * });
+ * ```
+ */
+export interface AssertionPlugin {
+  /** Unique plugin name (used as assertion type prefix) */
+  name: string;
+  /**
+   * Execute assertions for the given type.
+   *
+   * @param type - The assertion type string (from YAML `assert.type` or runner config)
+   * @param input - The primary input (e.g., file path, session directory, cost.json path)
+   * @param config - Plugin-specific assertion configuration
+   * @returns Array of assertion results (empty if this plugin doesn't handle `type`)
+   */
+  assert(type: string, input: unknown, config: unknown): AssertionResult[];
 }
 
 // ==================== 测试运行器 ====================

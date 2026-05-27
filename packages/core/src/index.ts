@@ -23,12 +23,26 @@ export {
   createVariableContext,
 } from './variable-resolver.js';
 
-// Assertion Engine
+// Assertion Engine (HTTP response assertions + generic file/LLM assertions)
 export {
   assertBody,
   assertStatus,
   assertHeaders,
+  assertFile,
+  assertFileContent,
+  assertFileJson,
+  assertFileNotExists,
+  judgeLlm,
+  type JudgeOptions,
+  type JudgeResult,
 } from './assertion-engine.js';
+
+// Assertion Plugin Registry (extensibility for custom agent assertions)
+export {
+  AssertionPluginRegistry,
+  globalAssertionPluginRegistry,
+} from './assertion-plugin-registry.js';
+export type { AssertionPlugin } from './types.js';
 
 // Docker Engine
 export {
