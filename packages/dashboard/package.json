@@ -37,6 +37,7 @@
     "build": "tsc --noEmit && tsc -p tsconfig.server.json && vite build",
     "build:ui": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
+    "build:standalone": "VITE_API_BASE_URL=/api VITE_AUTH_REQUIRED=true tsc --noEmit && tsc -p tsconfig.server.json && vite build",
     "start": "node dist/server/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
