@@ -44,6 +44,14 @@ export {
 } from './assertion-plugin-registry.js';
 export type { AssertionPlugin } from './types.js';
 
+// Plugin Loader (e2e.yaml plugins[] — load modules before running tests)
+export {
+  loadPlugins,
+  teardownPlugins,
+} from './plugin-loader.js';
+export type { LoadedPlugin } from './plugin-loader.js';
+export type { PluginModule } from './types.js';
+
 // Docker Engine
 export {
   buildImage,

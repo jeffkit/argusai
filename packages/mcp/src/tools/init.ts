@@ -4,7 +4,7 @@
  */
 
 import path from 'node:path';
-import { loadConfig } from 'argusai-core';
+import { loadConfig, loadPlugins } from 'argusai-core';
 import type { E2EConfig, ServiceConfig, ServiceDefinition, MockServiceConfig, TestSuiteConfig } from 'argusai-core';
 import { SessionManager, SessionError } from '../session.js';
 
@@ -88,6 +88,14 @@ export async function handleInit(
       throw new SessionError('CONFIG_INVALID', message);
     }
     throw err;
+  }
+
+  if (config.plugins && config.plugins.length > 0) {
+    try {
+      await loadPlugins(config.plugins, projectPath);
+    } catch (err) {
+      throw new SessionError('PLUGIN_LOAD_ERROR', `Plugin load failed: ${(err as Error).message}`);
+    }
   }
 
   sessionManager.create(projectPath, config, configPath);

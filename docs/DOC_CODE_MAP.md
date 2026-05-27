@@ -27,3 +27,4 @@
 | `argusai-marketplace/argusai/skills/argusai-author/SKILL.md` | `packages/core/src/config-loader.ts`, `packages/core/src/types.ts` | argusai-author 配置创作技能（isolation/test-only 配置选项） |
 | `specs/003-evolution-roadmap/roadmap.md` | `packages/core/src/**`, `packages/mcp/src/**`, `packages/dashboard/**` | ArgusAI 进化路线图 |
 | `argusai-marketplace/argusai/skills/argusai-e2e/SKILL.md` | `packages/core/src/browser-executor.ts`, `packages/core/src/yaml-engine.ts`, `packages/core/src/types.ts` | argusai-e2e 运行技能（browser DSL 章节） |
+|| `docs/plugin-development.md` | `packages/core/src/plugin-loader.ts`, `packages/core/src/types.ts`, `packages/core/src/assertion-plugin-registry.ts`, `packages/cli/src/commands/run.ts`, `packages/mcp/src/tools/init.ts` | 插件开发指南 |

@@ -1,5 +1,15 @@
 # argusai-core
 
+## 0.11.0
+
+### Minor Changes
+
+- Add plugin loading support via `e2e.yaml` `plugins` field.
+
+  - **argusai-core**: New `plugin-loader.ts` with `loadPlugins()` / `teardownPlugins()` functions. New `PluginModule` interface exported from package root. `E2EConfig` and `E2EConfigSchema` gain optional `plugins: string[]` field.
+  - **argusai-cli**: `argusai run` loads plugins declared in `plugins[]` before executing suites and calls teardown after all suites finish.
+  - **argusai-mcp**: `argus_init` loads plugins on session initialization; plugin errors surface as `PLUGIN_LOAD_ERROR` session errors.
+
 ## 0.10.0
 
 ### Minor Changes

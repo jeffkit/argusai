@@ -272,6 +272,8 @@ export const E2EConfigSchema = z.object({
   history: HistoryConfigSchema.optional().describe('Test result history persistence and flaky detection'),
   isolation: IsolationConfigSchema.describe('Multi-project isolation — namespace, port range'),
   server: ServerConfigSchema.describe('Server sync configuration — omitting preserves local-only behavior'),
+  plugins: z.array(z.string()).optional()
+    .describe('Plugin module specifiers to load before running tests (relative paths, absolute paths, or npm package names)'),
 }).describe('Preflight E2E test configuration');
 
 /** Validated configuration type inferred from the Zod schema */

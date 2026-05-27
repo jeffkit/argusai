@@ -1,6 +1,6 @@
 {
   "name": "argusai-server",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "type": "module",
   "description": "ArgusAI Server — centralized service layer for team-wide test result aggregation, sync, and notifications",
   "license": "MIT",

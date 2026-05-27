@@ -33,6 +33,8 @@ export function registerRun(program: Command): void {
     .action(async (opts: { suite?: string; reporter: string; output?: string; timeout: string; history: boolean }) => {
       const {
         loadConfig,
+        loadPlugins,
+        teardownPlugins,
         createDefaultRegistry,
         ConsoleReporter,
         JSONReporter,
@@ -51,6 +53,16 @@ export function registerRun(program: Command): void {
         console.error(`${RED}Failed to load config: ${(err as Error).message}${RESET}`);
         process.exit(1);
       }
+
+      const configDir = configPath ? path.dirname(path.resolve(configPath)) : process.cwd();
+      const loadedPlugins = await (async () => {
+        try {
+          return await loadPlugins(config.plugins, configDir);
+        } catch (err) {
+          console.error(`${RED}Plugin load error: ${(err as Error).message}${RESET}`);
+          process.exit(1);
+        }
+      })();
 
       if (!config.tests?.suites || config.tests.suites.length === 0) {
         console.error(`${RED}No test suites defined in configuration.${RESET}`);
@@ -81,7 +93,6 @@ export function registerRun(program: Command): void {
       console.log(`\n${BOLD}Running ${suites.length} suite(s)...${RESET}\n`);
 
       const timeout = parseInt(opts.timeout, 10);
-      const configDir = configPath ? path.dirname(path.resolve(configPath)) : process.cwd();
       const resolvedConfigPath = configPath ? path.resolve(configPath) : path.resolve(configDir, 'e2e.yaml');
       const runStart = Date.now();
 
@@ -209,6 +220,8 @@ export function registerRun(program: Command): void {
           );
         }
       }
+
+      await teardownPlugins(loadedPlugins);
 
       if (report.totals.failed > 0) {
         process.exit(1);

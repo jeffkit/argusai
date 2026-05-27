@@ -221,6 +221,21 @@ export interface E2EConfig {
   isolation?: IsolationConfig;
   /** Server sync configuration (optional — omitting preserves local-only behavior) */
   server?: ServerConfig;
+  /**
+   * Plugin modules to load before running tests.
+   *
+   * Each entry is a module specifier: a relative path (resolved from e2e.yaml's directory),
+   * an absolute path, or an npm package name. The module must export a `PluginModule`-compatible
+   * default or named export.
+   *
+   * @example
+   * ```yaml
+   * plugins:
+   *   - ./plugins/my-assertions.js
+   *   - argusai-plugin-db-fixtures
+   * ```
+   */
+  plugins?: string[];
 }
 
 // ==================== Isolation Config ====================
@@ -767,6 +782,46 @@ export interface AssertionPlugin {
    * @returns Array of assertion results (empty if this plugin doesn't handle `type`)
    */
   assert(type: string, input: unknown, config: unknown): AssertionResult[];
+}
+
+/**
+ * Plugin module interface — the shape that a module loaded via `e2e.yaml plugins[]` must export.
+ *
+ * All fields are optional; a plugin may implement only the hooks it needs.
+ *
+ * @example Minimal assertion plugin:
+ * ```ts
+ * // my-plugin.ts
+ * import type { PluginModule } from 'argusai-core';
+ *
+ * const plugin: PluginModule = {
+ *   name: 'my-plugin',
+ *   assertionPlugins: [{
+ *     name: 'my-type',
+ *     assert(type, input, config) { ... }
+ *   }],
+ * };
+ * export default plugin;
+ * ```
+ */
+export interface PluginModule {
+  /** Display name for logging and error messages. */
+  name: string;
+  /**
+   * Called once after the plugin is loaded, before any test runs.
+   * Use for one-time initialisation (DB connections, global stubs, etc.).
+   */
+  setup?: () => Promise<void> | void;
+  /**
+   * Called once after all test suites finish (success or failure).
+   * Use for teardown / cleanup.
+   */
+  teardown?: () => Promise<void> | void;
+  /**
+   * Custom assertion plugins to register in the global `AssertionPluginRegistry`.
+   * Each entry is registered automatically during `loadPlugins()`.
+   */
+  assertionPlugins?: AssertionPlugin[];
 }
 
 // ==================== 测试运行器 ====================
