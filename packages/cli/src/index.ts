@@ -6,7 +6,11 @@
  * Registers all sub-commands and parses process.argv via Commander.js.
  */
 
+import { createRequire } from 'module';
 import { Command } from 'commander';
+
+const _require = createRequire(import.meta.url);
+const { version: CLI_VERSION } = _require('../package.json') as { version: string };
 import { registerInit } from './commands/init.js';
 import { registerSetup } from './commands/setup.js';
 import { registerRun } from './commands/run.js';
@@ -39,7 +43,7 @@ export function createProgram(): Command {
   program
     .name('argusai')
     .description('配置驱动的 Docker 容器端到端测试平台')
-    .version('0.8.0')
+    .version(CLI_VERSION)
     .option('-c, --config <path>', 'e2e.yaml 配置文件路径')
     .option('--verbose', '启用详细输出');
 
