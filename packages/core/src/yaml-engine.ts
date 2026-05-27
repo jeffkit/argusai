@@ -428,7 +428,7 @@ const BUILT_IN_STEP_FIELDS = new Set([
  * key is handled by a registered AssertionPlugin, or `null` if none is found.
  */
 function findPluginStep(step: TestStep): { key: string; value: unknown } | null {
-  for (const [key, value] of Object.entries(step as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(step as unknown as Record<string, unknown>)) {
     if (BUILT_IN_STEP_FIELDS.has(key)) continue;
     if (globalAssertionPluginRegistry.handles(key)) {
       return { key, value };
