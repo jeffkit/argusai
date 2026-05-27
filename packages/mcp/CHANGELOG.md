@@ -1,5 +1,50 @@
 # argusai-mcp
 
+## 0.10.0
+
+### Minor Changes
+
+- ## ArgusAI Server Platformization (v0.10.0)
+
+  ### New Features
+
+  **argusai-core**:
+
+  - Drizzle ORM database abstraction layer (`packages/core/src/db/`) with SQLite/PG/MySQL schema support
+  - Server sync infrastructure (`packages/core/src/sync/`): SyncQueue, SyncClient, SyncManager, RemoteHistoryStore
+  - `ServerConfig` type and `ServerConfigSchema` for `e2e.yaml` `server` section
+  - `AssertionPluginRegistry` + `globalAssertionPluginRegistry` for pluggable custom assertions
+  - `assertFile*` and `judgeLlm` promoted to core assertion engine (generic, not agent-specific)
+  - DB migration v3: `sync_queue` table, server columns on `test_runs`/`failure_patterns`
+
+  **argusai-mcp**:
+
+  - Session manager migrated to `DrizzleHistoryStore` and `DrizzleKnowledgeStore`
+
+  **argusai-dashboard**:
+
+  - Server-aware UI components: `LoginScreen`, `ProjectList`, `TeamSelector`
+  - `DataSourceContext` for local ↔ remote data source switching
+  - API client for Dashboard ↔ ArgusAI Server REST integration
+
+  ### Deprecations
+
+  - `agent-assertions/session-assertions`, `cost-assertions`, `AgentTestRunner` are deprecated.
+    Implement as `AssertionPlugin` instances registered with `AssertionPluginRegistry` instead.
+
+  ### New Package
+
+  **argusai-server** (v0.6.0 → v0.7.0, published separately — not in linked group):
+
+  - Fastify REST API server for centralized test result aggregation
+  - Multi-tenant team isolation, WeChat Work notifications, trend analytics
+  - Docker deployment support
+
+### Patch Changes
+
+- Updated dependencies
+  - argusai-core@0.10.0
+
 ## 0.9.0
 
 ### Minor Changes
