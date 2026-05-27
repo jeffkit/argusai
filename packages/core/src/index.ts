@@ -7,6 +7,7 @@ export * from './types.js';
 export {
   loadConfig,
   E2EConfigSchema,
+  ServerConfigSchema,
   ResilienceConfigSchema,
   RetryPolicySchema,
   ParallelConfigSchema,
@@ -196,6 +197,12 @@ export { HistoryConfigSchema } from './config-loader.js';
 // Knowledge Subsystem (Diagnostics & Suggestions)
 export * from './knowledge/index.js';
 
+// Database (Drizzle ORM layer)
+export * from './db/index.js';
+
+// Sync Infrastructure
+export * from './sync/index.js';
+
 // Workspace Manager
 export {
   getWorkspacePath,
@@ -207,3 +214,6 @@ export {
   resolveBuildPaths,
 } from './workspace.js';
 export type { RepoInfo, WorkspaceInfo, SyncResult } from './workspace.js';
+
+// Agent Assertions (AI Agent E2E testing extensions)
+export * from './agent-assertions/index.js';
