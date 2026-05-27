@@ -1,0 +1,56 @@
+version: "1"
+
+project:
+  name: argusai-server
+  description: "ArgusAI Server self-bootstrap E2E test"
+
+service:
+  build:
+    dockerfile: packages/server/Dockerfile
+    context: ../..
+    image: argusai-server:e2e
+  container:
+    name: argusai-server-e2e
+    ports:
+      - "23000:3000"
+    environment:
+      DATABASE_URL: "/tmp/argusai-e2e.db"
+      DATABASE_DIALECT: sqlite
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      LOG_LEVEL: info
+      NODE_ENV: test
+    healthcheck:
+      path: /api/health
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      startPeriod: 20s
+  vars:
+    base_url: http://localhost:23000
+
+history:
+  enabled: true
+  storage: local
+  retention:
+    maxAge: 90d
+    maxRuns: 1000
+  flakyWindow: 10
+
+tests:
+  suites:
+    - id: health
+      name: Health Check
+      file: tests/health.yaml
+
+    - id: teams
+      name: Team Management
+      file: tests/teams.yaml
+
+    - id: sync
+      name: Result Sync Pipeline
+      file: tests/sync.yaml
+
+    - id: query
+      name: Query API
+      file: tests/query.yaml

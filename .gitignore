@@ -11,3 +11,8 @@ coverage/
 
 # Real project examples (contain internal URLs/secrets)
 examples/as-mate/
+
+# ArgusAI runtime data (local SQLite databases and WAL files)
+**/.argusai/*.db
+**/.argusai/*.db-shm
+**/.argusai/*.db-wal

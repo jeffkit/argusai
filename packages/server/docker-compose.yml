@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: argusai
+      POSTGRES_USER: argusai
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U argusai"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  argusai-server:
+    build:
+      context: ../..
+      dockerfile: packages/server/Dockerfile
+    ports:
+      - "${SERVER_PORT:-3000}:3000"
+    environment:
+      DATABASE_URL: "postgresql://argusai:${DB_PASSWORD:-changeme}@postgres:5432/argusai"
+      DATABASE_DIALECT: pg
+      PORT: 3000
+      HOST: 0.0.0.0
+      LOG_LEVEL: info
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ../..
+      dockerfile: packages/dashboard/Dockerfile
+    ports:
+      - "${DASHBOARD_PORT:-5173}:3000"
+    environment:
+      VITE_API_BASE_URL: "http://argusai-server:3000/api"
+      VITE_AUTH_REQUIRED: "true"
+    depends_on:
+      - argusai-server
+    profiles:
+      - full
+    restart: unless-stopped
+
+volumes:
+  pgdata:

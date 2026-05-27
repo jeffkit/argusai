@@ -1,0 +1,26 @@
+name: Health Check
+sequential: true
+
+setup:
+  - waitHealthy:
+      timeout: 30s
+
+cases:
+  - name: "Server is alive"
+    request:
+      method: GET
+      path: /api/health
+    expect:
+      status: 200
+      body:
+        status: ok
+        service: argusai-server
+
+  - name: "Health reports database connected"
+    request:
+      method: GET
+      path: /api/health
+    expect:
+      status: 200
+      body:
+        database: connected

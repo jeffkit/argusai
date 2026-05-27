@@ -1,0 +1,99 @@
+name: Team Management
+sequential: true
+
+setup:
+  - waitHealthy:
+      timeout: 30s
+
+cases:
+  - name: "Create team"
+    request:
+      method: POST
+      path: /api/teams
+      headers:
+        Content-Type: application/json
+      body:
+        name: "e2e-test-team"
+    expect:
+      status: 201
+      body:
+        success: true
+    save:
+      team_id: "team.id"
+      api_key: "apiKey"
+
+  - name: "Duplicate team rejected"
+    request:
+      method: POST
+      path: /api/teams
+      headers:
+        Content-Type: application/json
+      body:
+        name: "e2e-test-team"
+    expect:
+      status: 409
+      body:
+        success: false
+        code: TEAM_EXISTS
+
+  - name: "Get team info with auth"
+    request:
+      method: GET
+      path: /api/teams
+      headers:
+        X-API-Key: "{{runtime.api_key}}"
+    expect:
+      status: 200
+      body:
+        success: true
+
+  - name: "Unauthenticated request rejected"
+    request:
+      method: GET
+      path: /api/teams
+    expect:
+      status: 401
+      body:
+        success: false
+
+  - name: "Invalid API key rejected"
+    request:
+      method: GET
+      path: /api/teams
+      headers:
+        X-API-Key: "invalid-key-12345"
+    expect:
+      status: 401
+
+  - name: "Reset API key"
+    request:
+      method: POST
+      path: "/api/teams/{{runtime.team_id}}/reset-key"
+      headers:
+        X-API-Key: "{{runtime.api_key}}"
+    expect:
+      status: 200
+      body:
+        success: true
+    save:
+      new_api_key: "apiKey"
+
+  - name: "Old key no longer works"
+    request:
+      method: GET
+      path: /api/teams
+      headers:
+        X-API-Key: "{{runtime.api_key}}"
+    expect:
+      status: 401
+
+  - name: "New key works"
+    request:
+      method: GET
+      path: /api/teams
+      headers:
+        X-API-Key: "{{runtime.new_api_key}}"
+    expect:
+      status: 200
+      body:
+        success: true

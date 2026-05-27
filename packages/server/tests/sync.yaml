@@ -1,0 +1,171 @@
+name: Result Sync Pipeline
+sequential: true
+
+setup:
+  - waitHealthy:
+      timeout: 30s
+
+cases:
+  - name: "Setup — Create team for sync"
+    request:
+      method: POST
+      path: /api/teams
+      headers:
+        Content-Type: application/json
+      body:
+        name: "sync-test-team"
+    expect:
+      status: 201
+      body:
+        success: true
+    save:
+      team_id: "team.id"
+      api_key: "apiKey"
+
+  - name: "Sync first run — auto project registration"
+    request:
+      method: POST
+      path: /api/sync/runs
+      headers:
+        Content-Type: application/json
+        X-API-Key: "{{runtime.api_key}}"
+      body:
+        project: "my-service"
+        team: "sync-test-team"
+        sourceDeveloper: "alice"
+        run:
+          id: "run-e2e-001"
+          timestamp: 1773100000000
+          gitCommit: "abc123"
+          gitBranch: "main"
+          configHash: "h1"
+          trigger: "cli"
+          duration: 5000
+          passed: 8
+          failed: 2
+          skipped: 1
+          flaky: 0
+          status: "failed"
+        cases:
+          - id: "c1"
+            suiteId: "s1"
+            caseName: "test-login"
+            status: "passed"
+            duration: 1200
+            attempts: 1
+            responseMs: 350
+            assertions: 3
+            error: null
+            snapshot: null
+          - id: "c2"
+            suiteId: "s1"
+            caseName: "test-checkout"
+            status: "failed"
+            duration: 3000
+            attempts: 2
+            responseMs: null
+            assertions: 5
+            error: "Timeout waiting for element"
+            snapshot: null
+    expect:
+      status: 200
+      body:
+        success: true
+
+  - name: "Idempotent sync — same run not duplicated"
+    request:
+      method: POST
+      path: /api/sync/runs
+      headers:
+        Content-Type: application/json
+        X-API-Key: "{{runtime.api_key}}"
+      body:
+        project: "my-service"
+        team: "sync-test-team"
+        run:
+          id: "run-e2e-001"
+          timestamp: 1773100000000
+          gitCommit: "abc123"
+          gitBranch: "main"
+          configHash: "h1"
+          trigger: "cli"
+          duration: 5000
+          passed: 8
+          failed: 2
+          skipped: 1
+          flaky: 0
+          status: "failed"
+        cases: []
+    expect:
+      status: 200
+      body:
+        success: true
+
+  - name: "Team name mismatch rejected"
+    request:
+      method: POST
+      path: /api/sync/runs
+      headers:
+        Content-Type: application/json
+        X-API-Key: "{{runtime.api_key}}"
+      body:
+        project: "my-service"
+        team: "wrong-team-name"
+        run:
+          id: "run-e2e-002"
+          timestamp: 1773100001000
+          gitCommit: "def456"
+          gitBranch: "main"
+          configHash: "h1"
+          trigger: "cli"
+          duration: 3000
+          passed: 10
+          failed: 0
+          skipped: 0
+          flaky: 0
+          status: "passed"
+        cases: []
+    expect:
+      status: 403
+      body:
+        success: false
+
+  - name: "Sync second run for data"
+    request:
+      method: POST
+      path: /api/sync/runs
+      headers:
+        Content-Type: application/json
+        X-API-Key: "{{runtime.api_key}}"
+      body:
+        project: "my-service"
+        team: "sync-test-team"
+        sourceDeveloper: "bob"
+        run:
+          id: "run-e2e-002"
+          timestamp: 1773100100000
+          gitCommit: "def456"
+          gitBranch: "main"
+          configHash: "h1"
+          trigger: "mcp"
+          duration: 3000
+          passed: 10
+          failed: 0
+          skipped: 0
+          flaky: 0
+          status: "passed"
+        cases:
+          - id: "c3"
+            suiteId: "s1"
+            caseName: "test-login"
+            status: "passed"
+            duration: 1000
+            attempts: 1
+            responseMs: 300
+            assertions: 3
+            error: null
+            snapshot: null
+    expect:
+      status: 200
+      body:
+        success: true

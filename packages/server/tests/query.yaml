@@ -1,0 +1,145 @@
+name: Query API
+sequential: true
+
+setup:
+  - waitHealthy:
+      timeout: 30s
+
+cases:
+  - name: "Setup — Create team and seed data"
+    request:
+      method: POST
+      path: /api/teams
+      headers:
+        Content-Type: application/json
+      body:
+        name: "query-test-team"
+    expect:
+      status: 201
+    save:
+      api_key: "apiKey"
+
+  - name: "Seed — Sync test run"
+    request:
+      method: POST
+      path: /api/sync/runs
+      headers:
+        Content-Type: application/json
+        X-API-Key: "{{runtime.api_key}}"
+      body:
+        project: "query-app"
+        team: "query-test-team"
+        sourceDeveloper: "carol"
+        run:
+          id: "run-q-001"
+          timestamp: 1773100000000
+          gitCommit: "q123"
+          gitBranch: "main"
+          configHash: "qh1"
+          trigger: "cli"
+          duration: 4500
+          passed: 5
+          failed: 1
+          skipped: 0
+          flaky: 0
+          status: "failed"
+        cases:
+          - id: "qc1"
+            suiteId: "qs1"
+            caseName: "test-search"
+            status: "passed"
+            duration: 800
+            attempts: 1
+            responseMs: 200
+            assertions: 2
+            error: null
+            snapshot: null
+          - id: "qc2"
+            suiteId: "qs1"
+            caseName: "test-filter"
+            status: "failed"
+            duration: 2500
+            attempts: 3
+            responseMs: null
+            assertions: 4
+            error: "Expected 3 items, got 0"
+            snapshot: null
+    expect:
+      status: 200
+
+  - name: "List runs"
+    request:
+      method: GET
+      path: "/api/runs?project=query-app"
+      headers:
+        X-API-Key: "{{runtime.api_key}}"
+    expect:
+      status: 200
+      body:
+        success: true
+
+  - name: "Get run detail"
+    request:
+      method: GET
+      path: /api/runs/run-q-001
+      headers:
+        X-API-Key: "{{runtime.api_key}}"
+    expect:
+      status: 200
+      body:
+        success: true
+
+  - name: "Run not found returns 404"
+    request:
+      method: GET
+      path: /api/runs/non-existent
+      headers:
+        X-API-Key: "{{runtime.api_key}}"
+    expect:
+      status: 404
+      body:
+        success: false
+
+  - name: "List projects"
+    request:
+      method: GET
+      path: /api/projects
+      headers:
+        X-API-Key: "{{runtime.api_key}}"
+    expect:
+      status: 200
+      body:
+        success: true
+
+  - name: "Get project detail"
+    request:
+      method: GET
+      path: /api/projects/query-app
+      headers:
+        X-API-Key: "{{runtime.api_key}}"
+    expect:
+      status: 200
+      body:
+        success: true
+
+  - name: "Pass rate trend"
+    request:
+      method: GET
+      path: "/api/trends/pass-rate?project=query-app&days=30"
+      headers:
+        X-API-Key: "{{runtime.api_key}}"
+    expect:
+      status: 200
+      body:
+        success: true
+
+  - name: "Patterns endpoint"
+    request:
+      method: GET
+      path: /api/patterns
+      headers:
+        X-API-Key: "{{runtime.api_key}}"
+    expect:
+      status: 200
+      body:
+        success: true
