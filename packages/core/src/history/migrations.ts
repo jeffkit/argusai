@@ -101,6 +101,32 @@ const MIGRATIONS: Migration[] = [
         ('builtin-assertion',     'ASSERTION_MISMATCH',  'builtin::ASSERTION_MISMATCH',  'expected .* to (equal|match|be)',        'Test assertion failed',                     '断言失败，检查测试期望值或服务返回值是否正确',                              0.5, 0, 0, 'built-in')`,
     ],
   },
+  {
+    version: 3,
+    description: 'Add server columns to test_runs and failure_patterns, create sync_queue table',
+    up: [
+      'ALTER TABLE test_runs ADD COLUMN team_id TEXT',
+      'ALTER TABLE test_runs ADD COLUMN project_id TEXT',
+      'ALTER TABLE test_runs ADD COLUMN source_developer TEXT',
+      'ALTER TABLE test_runs ADD COLUMN synced_at TEXT',
+      'ALTER TABLE failure_patterns ADD COLUMN team_id TEXT',
+      'ALTER TABLE failure_patterns ADD COLUMN project_id TEXT',
+      `CREATE TABLE IF NOT EXISTS sync_queue (
+        id            TEXT PRIMARY KEY,
+        payload       TEXT NOT NULL,
+        type          TEXT NOT NULL CHECK (type IN ('run', 'patterns')),
+        status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sending', 'completed', 'failed')),
+        attempts      INTEGER NOT NULL DEFAULT 0,
+        max_retries   INTEGER NOT NULL DEFAULT 10,
+        created_at    TEXT NOT NULL,
+        next_retry_at TEXT NOT NULL,
+        last_error    TEXT
+      )`,
+      'CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status, next_retry_at)',
+      'CREATE INDEX IF NOT EXISTS idx_runs_team_project ON test_runs(team_id, project_id, timestamp DESC)',
+      'CREATE INDEX IF NOT EXISTS idx_patterns_team_sig ON failure_patterns(team_id, signature)',
+    ],
+  },
 ];
 
 /**

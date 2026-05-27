@@ -4,7 +4,7 @@
  */
 
 export * from './types.js';
-export type { HistoryStore, GetRunsOptions, GetRunsResult } from './history-store.js';
+export type { HistoryStore, GetRunsOptions, GetRunsResult, DrizzleHistoryStoreWithDb } from './history-store.js';
 export { SQLiteHistoryStore, NoopHistoryStore, createHistoryStore } from './history-store.js';
 export { MemoryHistoryStore } from './memory-history-store.js';
 export { HistoryRecorder } from './history-recorder.js';

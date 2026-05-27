@@ -220,6 +220,20 @@ export const IsolationConfigSchema = z.object({
 }).optional().describe('Multi-project isolation and resource namespace configuration');
 
 // =====================================================================
+// Server Sync Configuration Schema
+// =====================================================================
+
+/** Server sync configuration Zod schema (optional section in e2e.yaml). */
+export const ServerConfigSchema = z.object({
+  url: z.string().url().describe('ArgusAI Server base URL'),
+  apiKey: z.string().min(1).describe('Team API key (supports ${ENV_VAR} substitution)'),
+  team: z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/, 'Team name must be alphanumeric with hyphens/underscores')
+    .describe('Team name (must match API key team)'),
+  sync: z.enum(['auto', 'manual', 'disabled']).default('auto')
+    .describe('Sync mode: auto, manual, or disabled'),
+}).optional().describe('Server sync configuration — omitting preserves local-only behavior');
+
+// =====================================================================
 // Complete E2E Configuration Schema
 // =====================================================================
 
@@ -257,6 +271,7 @@ export const E2EConfigSchema = z.object({
   resilience: ResilienceConfigSchema.optional().describe('Resilience subsystem — error recovery, preflight, circuit breaker'),
   history: HistoryConfigSchema.optional().describe('Test result history persistence and flaky detection'),
   isolation: IsolationConfigSchema.describe('Multi-project isolation — namespace, port range'),
+  server: ServerConfigSchema.describe('Server sync configuration — omitting preserves local-only behavior'),
 }).describe('Preflight E2E test configuration');
 
 /** Validated configuration type inferred from the Zod schema */
@@ -338,6 +353,11 @@ export async function loadConfig(configPath?: string): Promise<E2EConfig> {
   // 6. Resolve build paths to absolute (relative to e2e.yaml directory)
   const validated = result.data as E2EConfig;
   resolveBuildPathsInConfig(validated, configDir);
+
+  // 7. Apply ARGUSAI_API_KEY env var override for server config
+  if (validated.server && process.env['ARGUSAI_API_KEY']) {
+    validated.server.apiKey = process.env['ARGUSAI_API_KEY'];
+  }
 
   return validated;
 }

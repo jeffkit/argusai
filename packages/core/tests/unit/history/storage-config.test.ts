@@ -13,6 +13,7 @@ import {
   NoopHistoryStore,
 } from '../../../src/history/history-store.js';
 import { MemoryHistoryStore } from '../../../src/history/memory-history-store.js';
+import { DrizzleHistoryStore } from '../../../src/db/drizzle-history-store.js';
 import type { HistoryConfig, TestRunRecord, TestCaseRunRecord } from '../../../src/history/types.js';
 
 function makeConfig(overrides?: Partial<HistoryConfig>): HistoryConfig {
@@ -53,10 +54,10 @@ describe('createHistoryStore', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('should return SQLiteHistoryStore for local mode', () => {
+  it('should return DrizzleHistoryStore for local mode', () => {
     const config = makeConfig({ storage: 'local' });
     const store = createHistoryStore(config, tmpDir);
-    expect(store).toBeInstanceOf(SQLiteHistoryStore);
+    expect(store).toBeInstanceOf(DrizzleHistoryStore);
     store.close();
   });
 
