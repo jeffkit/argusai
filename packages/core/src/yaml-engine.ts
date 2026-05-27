@@ -14,6 +14,7 @@ import net from 'node:net';
 import type { YAMLTestSuite, TestStep, TestEvent, VariableContext, DiagnosticReport, RetryPolicy, AttemptResult, BrowserAction, PageExpect } from './types.js';
 import { resolveVariables, resolveObjectVariables } from './variable-resolver.js';
 import { assertStatus, assertHeaders, assertBody } from './assertion-engine.js';
+import { globalAssertionPluginRegistry } from './assertion-plugin-registry.js';
 import { DiagnosticCollector } from './diagnostics.js';
 import { RetryExecutor, resolveRetryPolicy } from './retry-engine.js';
 import { BrowserSession } from './browser-executor.js';
@@ -412,6 +413,31 @@ export async function* executeYAMLSuite(
 // =====================================================================
 
 /**
+ * Built-in field names on a TestStep that are NOT custom step-type identifiers.
+ * Used by findPluginStep() to skip known fields when scanning for plugin-owned step types.
+ */
+const BUILT_IN_STEP_FIELDS = new Set([
+  'name', 'delay', 'request', 'exec', 'file', 'process', 'port', 'sse', 'browser',
+  'expect', 'save', 'ignoreError', 'retry',
+]);
+
+/**
+ * Scan a resolved step for a custom plugin-owned field.
+ *
+ * Returns the first {key, value} pair whose key is not a built-in field and whose
+ * key is handled by a registered AssertionPlugin, or `null` if none is found.
+ */
+function findPluginStep(step: TestStep): { key: string; value: unknown } | null {
+  for (const [key, value] of Object.entries(step as Record<string, unknown>)) {
+    if (BUILT_IN_STEP_FIELDS.has(key)) continue;
+    if (globalAssertionPluginRegistry.handles(key)) {
+      return { key, value };
+    }
+  }
+  return null;
+}
+
+/**
  * Execute a single test step: send HTTP request, exec command, browser action, or file assertion.
  *
  * @returns Array of error messages (empty if all assertions pass)
@@ -459,7 +485,17 @@ async function executeStep(
 
   // ── HTTP request step ──
   if (!resolvedStep.request) {
-    return [`Step "${resolvedStep.name}" has no recognized step type (request, exec, file, process, port, sse, or browser)`];
+    // Fallback: check plugin registry for custom step types registered by plugins.
+    // A plugin step is any top-level field on the step object that is not a built-in
+    // field and whose name is handled by a registered AssertionPlugin.
+    const pluginStep = findPluginStep(resolvedStep);
+    if (pluginStep !== null) {
+      const { key, value } = pluginStep;
+      const results = globalAssertionPluginRegistry.runAll(key, value, resolvedStep.expect ?? null);
+      return results.filter(r => !r.passed).map(r => r.message);
+    }
+
+    return [`Step "${resolvedStep.name}" has no recognized step type (request, exec, file, process, port, sse, browser, or a registered plugin step)`];
   }
 
   // Build the URL: prefer explicit url, otherwise baseUrl + path

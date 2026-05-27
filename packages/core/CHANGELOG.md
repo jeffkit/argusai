@@ -1,5 +1,27 @@
 # argusai-core
 
+## 0.12.0
+
+### Minor Changes
+
+- feat(yaml-engine): add plugin step fallback in executeStep
+
+  The YAML engine now falls back to the global AssertionPluginRegistry when a
+  step contains an unrecognized top-level field. If a registered plugin handles
+  the field name (via `AssertionPluginRegistry.handles()`), the engine calls
+  `globalAssertionPluginRegistry.runAll(key, value, step.expect)` and returns
+  the failed assertion messages instead of the generic "no recognized step type"
+  error.
+
+  This closes the two gaps identified in the plugin integration:
+
+  1. `executeStep` now has a plugin registry fallback branch.
+  2. `globalAssertionPluginRegistry.runAll()` is now exercised in the YAML
+     execution path.
+
+  Custom step types (e.g. `recursive-session:`) registered by external plugins
+  via `PluginModule.assertionPlugins` are now fully supported in YAML test files.
+
 ## 0.11.0
 
 ### Minor Changes
