@@ -10,9 +10,9 @@
  * auto-cleanup and per-session mutex.
  */
 
-import type { E2EConfig, SSEBus, PortMapping, CircuitBreakerState, HistoryConfig } from 'argusai-core';
+import type { E2EConfig, SSEBus, PortMapping, CircuitBreakerState, HistoryConfig, DrizzleHistoryStoreWithDb } from 'argusai-core';
 import type { HistoryStore, KnowledgeStore } from 'argusai-core';
-import { CircuitBreaker, createHistoryStore, HistoryRecorder, SQLiteHistoryStore, SQLiteKnowledgeStore, NoopKnowledgeStore, PortAllocator } from 'argusai-core';
+import { CircuitBreaker, createHistoryStore, HistoryRecorder, SQLiteHistoryStore, SQLiteKnowledgeStore, NoopKnowledgeStore, PortAllocator, DrizzleHistoryStore, DrizzleKnowledgeStore, createSqliteDbFromDatabase } from 'argusai-core';
 
 // =====================================================================
 // Types
@@ -233,7 +233,15 @@ export class SessionManager {
         historyStore = createHistoryStore(effectiveConfig, projectPath);
         historyRecorder = new HistoryRecorder(historyStore, effectiveConfig);
 
-        if (historyStore instanceof SQLiteHistoryStore) {
+        if (historyStore instanceof DrizzleHistoryStore) {
+          const rawDb = (historyStore as DrizzleHistoryStoreWithDb).__rawDb;
+          if (rawDb) {
+            const drizzleDb = createSqliteDbFromDatabase(rawDb);
+            knowledgeStore = new DrizzleKnowledgeStore(drizzleDb);
+          } else {
+            knowledgeStore = new NoopKnowledgeStore();
+          }
+        } else if (historyStore instanceof SQLiteHistoryStore) {
           knowledgeStore = new SQLiteKnowledgeStore(historyStore.getDatabase());
         } else {
           knowledgeStore = new NoopKnowledgeStore();
