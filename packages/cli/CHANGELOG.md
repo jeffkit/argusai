@@ -1,5 +1,14 @@
 # argusai
 
+## 0.12.1
+
+### Patch Changes
+
+- Updated dependencies [7929fb6]
+  - argusai-core@0.12.1
+  - argusai-dashboard@0.12.1
+  - argusai-mcp@0.12.1
+
 ## 0.12.0
 
 ### Patch Changes
