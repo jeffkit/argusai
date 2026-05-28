@@ -262,7 +262,26 @@ export async function* executeYAMLSuite(
   const retryExecutor = new RetryExecutor();
 
   // ---- Test Cases ----
+  // Fail-fast: when `suite.sequential === true` and a case fails (after retries
+  // exhausted, and not via `ignoreError`), skip every subsequent case and emit
+  // `case_skip` for each. The `case_skip` event is already typed in types.ts
+  // and aggregated by reporter.ts (suite.skipped++), so no downstream change.
+  let skipRemaining = false;
+
   for (const testCase of suite.cases) {
+    // If a prior case failed under sequential mode, emit case_skip and continue.
+    if (skipRemaining) {
+      skipped++;
+      yield {
+        type: 'case_skip',
+        suite: suiteName,
+        name: testCase.name,
+        reason: 'Previous case failed in sequential suite (fail-fast)',
+        timestamp: Date.now(),
+      };
+      continue;
+    }
+
     const caseStart = Date.now();
     const caseName = testCase.name;
 
@@ -337,6 +356,9 @@ export async function* executeYAMLSuite(
             diagnostics,
             attempts: result.attempts,
           };
+          if (suite.sequential === true) {
+            skipRemaining = true;
+          }
         }
       }
     } else {
@@ -373,6 +395,9 @@ export async function* executeYAMLSuite(
             timestamp: Date.now(),
             diagnostics,
           };
+          if (suite.sequential === true) {
+            skipRemaining = true;
+          }
         }
       }
     }

@@ -542,4 +542,217 @@ describe('yaml-engine', () => {
       }
     });
   });
+
+  // ── Sequential fail-fast (skip remaining on first failure) ──────────
+  // When suite.sequential === true and a case fails (after retries exhausted,
+  // and not via ignoreError), the engine emits `case_skip` for every
+  // subsequent case and stops executing them. Without sequential (or with
+  // sequential: false / undefined), behavior is unchanged: every case runs.
+  describe('sequential fail-fast', () => {
+    // Helper: write a 3-case suite where the middle case targets a path we
+    // can control via `pathToFail` (e.g. /fail vs /pass). The first case
+    // always hits /pass, the third always hits /pass too. With sequential=true
+    // and middle case failing, the third should be skipped.
+    function writeThreeCaseSuite(
+      filePath: string,
+      sequentialField: string, // e.g. 'sequential: true\n', '', 'sequential: false\n'
+      middleCaseExtra: string = '', // e.g. 'ignoreError: true\n'
+    ): string {
+      const yaml = [
+        'name: FailFast Test',
+        sequentialField.trimEnd(),
+        'cases:',
+        '  - name: case-A-pass',
+        '    request:',
+        '      method: GET',
+        '      path: /pass',
+        '    expect:',
+        '      status: 200',
+        '  - name: case-B-fail',
+        '    request:',
+        '      method: GET',
+        '      path: /fail',
+        '    expect:',
+        '      status: 200',
+        ...(middleCaseExtra ? ['    ' + middleCaseExtra.trim()] : []),
+        '  - name: case-C-pass',
+        '    request:',
+        '      method: GET',
+        '      path: /pass',
+        '    expect:',
+        '      status: 200',
+      ].filter(line => line !== '').join('\n');
+      return yaml;
+    }
+
+    // Local fake server: /pass → 200, /fail → 500
+    let server: import('node:http').Server;
+    let baseUrl: string;
+
+    beforeEach(async () => {
+      const http = await import('node:http');
+      server = http.createServer((req, res) => {
+        if (req.url === '/pass') {
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end('ok');
+        } else {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('fail');
+        }
+      });
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+      const addr = server.address();
+      if (typeof addr === 'object' && addr) {
+        baseUrl = `http://127.0.0.1:${addr.port}`;
+      }
+    });
+
+    afterEach(async () => {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    });
+
+    async function runSuite(yamlContent: string) {
+      const filePath = path.join(tmpDir, 'fail-fast.yaml');
+      await fs.writeFile(filePath, yamlContent, 'utf-8');
+      const suite = await loadYAMLTests(filePath);
+
+      const events: TestEvent[] = [];
+      for await (const event of executeYAMLSuite(suite, {
+        baseUrl,
+        variables: { config: {}, runtime: {}, env: {} },
+        defaultTimeout: 1000,
+      })) {
+        events.push(event);
+      }
+      return events;
+    }
+
+    it('skips remaining cases when sequential=true and a case fails', async () => {
+      const yaml = writeThreeCaseSuite(path.join(tmpDir, 'ff.yaml'), 'sequential: true\n');
+      const events = await runSuite(yaml);
+
+      const passEvents = events.filter(e => e.type === 'case_pass');
+      const failEvents = events.filter(e => e.type === 'case_fail');
+      const skipEvents = events.filter(e => e.type === 'case_skip');
+      const suiteEnd = events.find(e => e.type === 'suite_end');
+
+      expect(passEvents).toHaveLength(1);
+      expect(failEvents).toHaveLength(1);
+      expect(skipEvents).toHaveLength(1);
+      if (skipEvents[0]?.type === 'case_skip') {
+        expect(skipEvents[0].name).toBe('case-C-pass');
+        expect(skipEvents[0].reason).toMatch(/sequential/i);
+      }
+      if (suiteEnd?.type === 'suite_end') {
+        expect(suiteEnd.passed).toBe(1);
+        expect(suiteEnd.failed).toBe(1);
+        expect(suiteEnd.skipped).toBe(1);
+      }
+    });
+
+    it('runs every case when sequential=true and all pass', async () => {
+      const yaml = [
+        'name: AllPass Sequential',
+        'sequential: true',
+        'cases:',
+        '  - name: a',
+        '    request: { method: GET, path: /pass }',
+        '    expect: { status: 200 }',
+        '  - name: b',
+        '    request: { method: GET, path: /pass }',
+        '    expect: { status: 200 }',
+        '  - name: c',
+        '    request: { method: GET, path: /pass }',
+        '    expect: { status: 200 }',
+      ].join('\n');
+      const events = await runSuite(yaml);
+
+      expect(events.filter(e => e.type === 'case_pass')).toHaveLength(3);
+      expect(events.filter(e => e.type === 'case_skip')).toHaveLength(0);
+      expect(events.filter(e => e.type === 'case_fail')).toHaveLength(0);
+    });
+
+    it('runs every case when sequential is undefined and middle case fails', async () => {
+      // No sequential field — should not fail-fast.
+      const yaml = writeThreeCaseSuite(path.join(tmpDir, 'ff.yaml'), '');
+      const events = await runSuite(yaml);
+
+      expect(events.filter(e => e.type === 'case_pass')).toHaveLength(2);
+      expect(events.filter(e => e.type === 'case_fail')).toHaveLength(1);
+      expect(events.filter(e => e.type === 'case_skip')).toHaveLength(0);
+    });
+
+    it('runs every case when sequential=false and middle case fails', async () => {
+      const yaml = writeThreeCaseSuite(path.join(tmpDir, 'ff.yaml'), 'sequential: false\n');
+      const events = await runSuite(yaml);
+
+      expect(events.filter(e => e.type === 'case_pass')).toHaveLength(2);
+      expect(events.filter(e => e.type === 'case_fail')).toHaveLength(1);
+      expect(events.filter(e => e.type === 'case_skip')).toHaveLength(0);
+    });
+
+    it('does not skip when ignoreError converts the failure to a pass', async () => {
+      const yaml = writeThreeCaseSuite(
+        path.join(tmpDir, 'ff.yaml'),
+        'sequential: true\n',
+        'ignoreError: true',
+      );
+      const events = await runSuite(yaml);
+
+      // Middle case becomes pass via ignoreError; third case still runs.
+      expect(events.filter(e => e.type === 'case_pass')).toHaveLength(3);
+      expect(events.filter(e => e.type === 'case_fail')).toHaveLength(0);
+      expect(events.filter(e => e.type === 'case_skip')).toHaveLength(0);
+    });
+
+    it('does not skip when retry exhausts but sequential is undefined', async () => {
+      // Independent of sequential, retry-then-fail in non-sequential should
+      // not skip the third case.
+      const yaml = writeThreeCaseSuite(path.join(tmpDir, 'ff.yaml'), '');
+      const filePath = path.join(tmpDir, 'ff-retry.yaml');
+      await fs.writeFile(filePath, yaml, 'utf-8');
+      const suite = await loadYAMLTests(filePath);
+
+      const events: TestEvent[] = [];
+      for await (const event of executeYAMLSuite(suite, {
+        baseUrl,
+        variables: { config: {}, runtime: {}, env: {} },
+        defaultTimeout: 1000,
+        globalRetryPolicy: { maxAttempts: 2, delay: '5ms' },
+      })) {
+        events.push(event);
+      }
+
+      expect(events.filter(e => e.type === 'case_pass')).toHaveLength(2);
+      expect(events.filter(e => e.type === 'case_fail')).toHaveLength(1);
+      expect(events.filter(e => e.type === 'case_skip')).toHaveLength(0);
+    });
+
+    it('triggers fail-fast only after retries are exhausted (not on first attempt)', async () => {
+      // sequential=true + retry — failed case still triggers fail-fast,
+      // but ONLY after retries exhausted. Verify the retried case has
+      // `attempts` array, then the next case is skipped.
+      const yaml = writeThreeCaseSuite(path.join(tmpDir, 'ff.yaml'), 'sequential: true\n');
+      const filePath = path.join(tmpDir, 'ff-seq-retry.yaml');
+      await fs.writeFile(filePath, yaml, 'utf-8');
+      const suite = await loadYAMLTests(filePath);
+
+      const events: TestEvent[] = [];
+      for await (const event of executeYAMLSuite(suite, {
+        baseUrl,
+        variables: { config: {}, runtime: {}, env: {} },
+        defaultTimeout: 1000,
+        globalRetryPolicy: { maxAttempts: 2, delay: '5ms' },
+      })) {
+        events.push(event);
+      }
+
+      const failEvent = events.find(e => e.type === 'case_fail');
+      expect(failEvent).toBeDefined();
+      if (failEvent?.type === 'case_fail') {
+        expect(failEvent.attempts).toHaveLength(2);
+      }
+      expect(events.filter(e => e.type === 'case_skip')).toHaveLength(1);
+    });
+  });
 });
