@@ -1,5 +1,21 @@
 # argusai-mcp
 
+## 0.12.2
+
+### Patch Changes
+
+- e3744c1: feat(mcp): support image-based mocks as Docker containers in argus-setup
+
+  - `MockServiceConfig` gains `volumes` and `args` fields (types.ts, config-loader.ts)
+  - `argus-setup` MCP tool now starts image-based mocks (e.g. aimock) as Docker
+    containers joined to the session's isolation network, instead of skipping them
+  - Volume paths relative to projectPath are resolved to absolute paths before
+    passing to `docker run`, so `./fixtures:/fixtures` works correctly
+  - Stale containers with the same name are removed before starting fresh
+
+- Updated dependencies [e3744c1]
+  - argusai-core@0.12.2
+
 ## 0.12.1
 
 ### Patch Changes
