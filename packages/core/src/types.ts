@@ -129,6 +129,10 @@ export interface MockServiceConfig {
   maxDepth?: number;
   /** Manual override routes that take precedence over auto-generated routes */
   overrides?: MockRouteConfig[];
+  /** Docker volume mounts for image-based mocks, e.g. ["./fixtures:/fixtures"] */
+  volumes?: string[];
+  /** Extra CLI args passed to the image entrypoint, e.g. "-f /fixtures -h 0.0.0.0" */
+  args?: string;
 }
 
 /** 测试套件配置 */

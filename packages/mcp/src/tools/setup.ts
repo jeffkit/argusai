@@ -169,6 +169,55 @@ export async function handleSetup(
     for (const [name, mockConfig] of Object.entries(mocks)) {
       const mc = mockConfig as MockServiceConfig;
       try {
+        // Image-based mocks (e.g. aimock) are started as Docker containers
+        // joined to the same network as the service container, so they are
+        // reachable by their `name` hostname inside the Docker network.
+        // In-process Fastify mocks (routes-only) are started on the host.
+        if (mc.image) {
+          const image = mc.image;
+          const args: string[] = (mc.args ?? '').split(/\s+/).filter(Boolean);
+          const volumes: string[] = mc.volumes ?? [];
+          const containerName = name;
+          // Remove stale container with same name if present
+          try {
+            const { execSync } = await import('child_process');
+            const running = execSync(
+              `docker ps -a --filter name=^/${containerName}$ --format "{{.Names}}"`,
+              { encoding: 'utf-8' },
+            ).trim();
+            if (running.includes(containerName)) {
+              execSync(`docker rm -f ${containerName}`, { stdio: 'pipe' });
+            }
+            // Resolve relative volume paths against the project path
+            const { resolve: pathResolve } = await import('path');
+            const resolvedVolumes = volumes.map((v: string) => {
+              const [hostPath, containerPath] = v.split(':');
+              const absHost = hostPath!.startsWith('.') ? pathResolve(session.projectPath, hostPath!) : hostPath!;
+              return containerPath ? `${absHost}:${containerPath}` : absHost;
+            });
+            const volFlags = resolvedVolumes.map((v: string) => `-v "${v}"`).join(' ');
+            const argStr = args.join(' ');
+            const cmd = `docker run -d --name ${containerName} --network ${session.networkName} -p ${mc.port}:${mc.port} ${volFlags} ${image} ${argStr}`.trim();
+            execSync(cmd, { stdio: 'pipe' });
+            // Brief wait for the container to start
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          } catch (dockerErr) {
+            throw new Error(`Failed to start image-based mock "${name}": ${(dockerErr as Error).message}`);
+          }
+          session.mockServers.set(name, {
+            server: { close: async () => {
+              try {
+                const { execSync } = await import('child_process');
+                execSync(`docker rm -f ${containerName}`, { stdio: 'pipe' });
+              } catch { /* ignore */ }
+            }},
+            port: mc.port,
+          });
+          bus?.emit('setup', { event: 'mock_started', data: { type: 'mock_started', name, port: mc.port, timestamp: ts() } });
+          mockResults.push({ name, port: mc.port, status: 'running', routeCount: 0 });
+          continue;
+        }
+
         const portInUse = await isPortInUse(mc.port);
         if (portInUse) {
           throw new SessionError('PORT_CONFLICT', `Port ${mc.port} is already in use for mock "${name}"`);

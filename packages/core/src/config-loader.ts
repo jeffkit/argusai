@@ -86,6 +86,10 @@ export const MockServiceSchema = z.object({
     .describe('Maximum nesting depth for circular $ref resolution'),
   overrides: z.array(MockRouteSchema).optional()
     .describe('Manual override routes that take precedence over auto-generated routes'),
+  volumes: z.array(z.string()).optional()
+    .describe('Docker volume mounts for image-based mocks, e.g. ["./fixtures:/fixtures"]'),
+  args: z.string().optional()
+    .describe('Extra CLI args passed to the image entrypoint, e.g. "-f /fixtures -h 0.0.0.0"'),
 }).refine(
   (data) => data.mode !== 'record' || data.target !== undefined,
   { message: 'target is required when mode is "record"', path: ['target'] },
