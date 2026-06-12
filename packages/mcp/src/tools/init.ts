@@ -70,7 +70,19 @@ export async function handleInit(
   const { projectPath, configFile } = params;
 
   if (sessionManager.has(projectPath)) {
-    throw new SessionError('SESSION_EXISTS', `Session already initialized for project: ${projectPath}`);
+    const existing = sessionManager.getOrThrow(projectPath);
+    // A lazily-created session (e.g. from a read-only tool like argus_history)
+    // has no live Docker resources, so an explicit init may safely replace it.
+    // A real, already-initialized/built/running session is left untouched.
+    if (existing.lazy && existing.state === 'initialized') {
+      // Release the shared SQLite handle the lazy session opened before the
+      // fresh init reopens it (knowledge store shares the same connection).
+      try { existing.knowledgeStore?.close(); } catch { /* ignore */ }
+      try { existing.historyStore?.close(); } catch { /* ignore */ }
+      sessionManager.remove(projectPath);
+    } else {
+      throw new SessionError('SESSION_EXISTS', `Session already initialized for project: ${projectPath}`);
+    }
   }
 
   const configFileName = configFile ?? 'e2e.yaml';

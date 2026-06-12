@@ -1,5 +1,19 @@
 # argusai-mcp
 
+## 0.12.3
+
+### Patch Changes
+
+- Improve MCP session robustness, converge the SQLite storage layer, and refactor Docker event streaming.
+
+  - mcp: read-only/persistence-backed tools (history, trends, flaky, compare, diagnose, patterns, report-fix) now lazily load `e2e.yaml` via `SessionManager.ensure()` instead of failing with `SESSION_NOT_FOUND` after a process restart, TTL expiry, or when `argus_init` was never called. `argus_init` transparently re-initializes such lazily-created sessions.
+  - mcp: knowledge base now keys off the shared raw DB handle, so it stays enabled even when the history store is wrapped (e.g. `RemoteHistoryStore`).
+  - core: `SQLiteHistoryStore` now owns only the connection/migrations and delegates all queries to an internal `DrizzleHistoryStore`, removing duplicated SQL so Drizzle is the single source of query truth.
+  - core: replaced the Docker build/log async-generator event bridge (shared array + 1s polling) with a promise-based queue, eliminating up-to-1s event latency and busy-waiting.
+
+- Updated dependencies
+  - argusai-core@0.12.3
+
 ## 0.12.2
 
 ### Patch Changes

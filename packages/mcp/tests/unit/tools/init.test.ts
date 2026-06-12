@@ -85,6 +85,19 @@ describe('handleInit', () => {
       .rejects.toThrow(SessionError);
   });
 
+  it('should re-initialize a lazily-created session instead of throwing', async () => {
+    vi.mocked(loadConfig).mockResolvedValue(mockConfig() as any);
+
+    // A read-only tool lazily created the session first.
+    const lazy = await sessionManager.ensure('/test/project');
+    expect(lazy.lazy).toBe(true);
+
+    // An explicit init should succeed (replacing the lazy session), not throw.
+    const result = await handleInit({ projectPath: '/test/project' }, sessionManager);
+    expect(result.projectName).toBe('test-project');
+    expect(sessionManager.getOrThrow('/test/project').lazy).toBeFalsy();
+  });
+
   it('should throw CONFIG_NOT_FOUND when config is missing', async () => {
     vi.mocked(loadConfig).mockRejectedValue(new Error('Configuration file not found: /test/project/e2e.yaml'));
 

@@ -1,5 +1,12 @@
 # argusai-server
 
+## 0.6.6
+
+### Patch Changes
+
+- Updated dependencies
+  - argusai-core@0.12.3
+
 ## 0.6.5
 
 ### Patch Changes

@@ -47,6 +47,12 @@ export interface ProjectSession {
   historyRecorder?: HistoryRecorder;
   /** Knowledge store for failure pattern diagnostics */
   knowledgeStore?: KnowledgeStore;
+  /**
+   * True when the session was created lazily by {@link SessionManager.ensure}
+   * (e.g. a read-only tool) rather than by an explicit `argus_init`. Such
+   * sessions can be safely re-initialized by `argus_init`.
+   */
+  lazy?: boolean;
 }
 
 const VALID_TRANSITIONS: Record<SessionState, SessionState[]> = {
@@ -235,7 +241,9 @@ export class SessionManager {
     if (this.has(projectPath, clientId)) {
       return this.getOrThrow(projectPath, clientId);
     }
-    return this.create(projectPath, config, configPath, clientId);
+    const session = this.create(projectPath, config, configPath, clientId);
+    session.lazy = true;
+    return session;
   }
 
   /**
@@ -280,14 +288,14 @@ export class SessionManager {
         historyStore = createHistoryStore(effectiveConfig, projectPath);
         historyRecorder = new HistoryRecorder(historyStore, effectiveConfig);
 
-        if (historyStore instanceof DrizzleHistoryStore) {
-          const rawDb = (historyStore as DrizzleHistoryStoreWithDb).__rawDb;
-          if (rawDb) {
-            const drizzleDb = createSqliteDbFromDatabase(rawDb);
-            knowledgeStore = new DrizzleKnowledgeStore(drizzleDb);
-          } else {
-            knowledgeStore = new NoopKnowledgeStore();
-          }
+        // Prefer the shared raw DB handle (attached by createHistoryStore to
+        // both DrizzleHistoryStore and the RemoteHistoryStore wrapper) so the
+        // knowledge base stays enabled regardless of which store wraps it.
+        const rawDb = (historyStore as Partial<DrizzleHistoryStoreWithDb>).__rawDb;
+        if (rawDb) {
+          knowledgeStore = new DrizzleKnowledgeStore(createSqliteDbFromDatabase(rawDb));
+        } else if (historyStore instanceof DrizzleHistoryStore) {
+          knowledgeStore = new NoopKnowledgeStore();
         } else if (historyStore instanceof SQLiteHistoryStore) {
           knowledgeStore = new SQLiteKnowledgeStore(historyStore.getDatabase());
         } else {
