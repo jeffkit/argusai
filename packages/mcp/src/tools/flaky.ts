@@ -24,7 +24,7 @@ export async function handleFlaky(
   params: FlakyParams,
   sessionManager: SessionManager,
 ): Promise<FlakyResult> {
-  const session = sessionManager.getOrThrow(params.projectPath);
+  const session = await sessionManager.ensure(params.projectPath);
 
   if (!session.historyStore) {
     const { SessionError } = await import('../session.js');

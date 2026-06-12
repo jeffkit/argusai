@@ -26,7 +26,7 @@ export async function handleCompare(
   params: CompareParams,
   sessionManager: SessionManager,
 ): Promise<CompareResult> {
-  const session = sessionManager.getOrThrow(params.projectPath);
+  const session = await sessionManager.ensure(params.projectPath);
 
   if (!session.historyStore) {
     const { SessionError } = await import('../session.js');

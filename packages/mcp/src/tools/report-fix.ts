@@ -19,7 +19,7 @@ export async function handleReportFix(
   params: ReportFixParams,
   sessionManager: SessionManager,
 ): Promise<ReportFixResult> {
-  const session = sessionManager.getOrThrow(params.projectPath);
+  const session = await sessionManager.ensure(params.projectPath);
 
   if (!session.historyStore || !session.knowledgeStore) {
     const { SessionError } = await import('../session.js');

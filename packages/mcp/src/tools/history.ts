@@ -23,7 +23,7 @@ export async function handleHistory(
   params: HistoryParams,
   sessionManager: SessionManager,
 ): Promise<HistoryResult> {
-  const session = sessionManager.getOrThrow(params.projectPath);
+  const session = await sessionManager.ensure(params.projectPath);
 
   if (!session.historyStore) {
     const { SessionError } = await import('../session.js');

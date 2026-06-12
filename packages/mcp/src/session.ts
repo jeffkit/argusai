@@ -10,9 +10,10 @@
  * auto-cleanup and per-session mutex.
  */
 
+import path from 'node:path';
 import type { E2EConfig, SSEBus, PortMapping, CircuitBreakerState, HistoryConfig, DrizzleHistoryStoreWithDb } from 'argusai-core';
 import type { HistoryStore, KnowledgeStore } from 'argusai-core';
-import { CircuitBreaker, createHistoryStore, HistoryRecorder, SQLiteHistoryStore, SQLiteKnowledgeStore, NoopKnowledgeStore, PortAllocator, DrizzleHistoryStore, DrizzleKnowledgeStore, createSqliteDbFromDatabase } from 'argusai-core';
+import { CircuitBreaker, createHistoryStore, HistoryRecorder, SQLiteHistoryStore, SQLiteKnowledgeStore, NoopKnowledgeStore, PortAllocator, DrizzleHistoryStore, DrizzleKnowledgeStore, createSqliteDbFromDatabase, loadConfig } from 'argusai-core';
 
 // =====================================================================
 // Types
@@ -189,6 +190,52 @@ export class SessionManager {
     }
     session.lastAccessedAt = Date.now();
     return session;
+  }
+
+  /**
+   * Ensure a session exists for a project, lazily loading `e2e.yaml` if needed.
+   *
+   * Unlike {@link getOrThrow}, this does not require a prior `argus_init`. It is
+   * intended for read-only / persistence-backed tools (history, trends, flaky,
+   * compare, diagnose, patterns, report-fix) that query SQLite and must keep
+   * working even after an MCP process restart or TTL expiry — situations where
+   * the in-memory session would otherwise be gone, producing SESSION_NOT_FOUND.
+   *
+   * Plugins are intentionally NOT loaded here; that remains the responsibility
+   * of the lifecycle tools via `argus_init`.
+   *
+   * @throws {SessionError} CONFIG_NOT_FOUND / CONFIG_INVALID when the config
+   *   cannot be loaded and no session exists yet.
+   */
+  async ensure(
+    projectPath: string,
+    configFile?: string,
+    clientId: string = SessionManager.DEFAULT_CLIENT,
+  ): Promise<ProjectSession> {
+    if (this.has(projectPath, clientId)) {
+      return this.getOrThrow(projectPath, clientId);
+    }
+
+    const configPath = path.resolve(projectPath, configFile ?? 'e2e.yaml');
+    let config: E2EConfig;
+    try {
+      config = await loadConfig(configPath);
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message.includes('not found')) {
+        throw new SessionError('CONFIG_NOT_FOUND', `Configuration file not found: ${configPath}`);
+      }
+      if (message.includes('validation failed')) {
+        throw new SessionError('CONFIG_INVALID', message);
+      }
+      throw err;
+    }
+
+    // Guard against a concurrent create() that may have raced in.
+    if (this.has(projectPath, clientId)) {
+      return this.getOrThrow(projectPath, clientId);
+    }
+    return this.create(projectPath, config, configPath, clientId);
   }
 
   /**

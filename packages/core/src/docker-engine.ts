@@ -189,25 +189,14 @@ export async function* buildImage(options: DockerBuildOptions): AsyncGenerator<B
 
   yield { type: 'build_start', image: options.imageName, timestamp: Date.now() };
 
-  const events: BuildEvent[] = [];
-  let done = false;
-  let resolveWait: (() => void) | null = null;
-
+  const queue = new AsyncEventQueue<BuildEvent>();
   const proc = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-
-  const pushEvent = (event: BuildEvent) => {
-    events.push(event);
-    if (resolveWait) {
-      resolveWait();
-      resolveWait = null;
-    }
-  };
 
   const processStream = (stream: 'stdout' | 'stderr', data: Buffer) => {
     const text = data.toString();
     for (const line of text.split('\n')) {
       if (line.trim()) {
-        pushEvent({ type: 'build_log', line: line, stream, timestamp: Date.now() });
+        queue.push({ type: 'build_log', line, stream, timestamp: Date.now() });
       }
     }
   };
@@ -216,37 +205,28 @@ export async function* buildImage(options: DockerBuildOptions): AsyncGenerator<B
   proc.stderr.on('data', (data: Buffer) => processStream('stderr', data));
 
   proc.on('close', (code) => {
-    pushEvent({
+    queue.push({
       type: 'build_end',
       success: code === 0,
       duration: Date.now() - startTime,
       error: code !== 0 ? `Build exited with code ${code}` : undefined,
       timestamp: Date.now(),
     });
-    done = true;
+    queue.end();
   });
 
   proc.on('error', (err) => {
-    pushEvent({
+    queue.push({
       type: 'build_end',
       success: false,
       duration: Date.now() - startTime,
       error: err.message,
       timestamp: Date.now(),
     });
-    done = true;
+    queue.end();
   });
 
-  while (!done || events.length > 0) {
-    if (events.length > 0) {
-      yield events.shift()!;
-    } else {
-      await new Promise<void>((resolve) => {
-        resolveWait = resolve;
-        setTimeout(resolve, 1000);
-      });
-    }
-  }
+  yield* queue.stream();
 }
 
 /** @deprecated Use {@link buildImage} instead. Kept for backward compatibility. */
@@ -529,27 +509,16 @@ export async function* streamContainerLogs(
 ): AsyncGenerator<ContainerEvent> {
   yield { type: 'container_start', name, timestamp: Date.now() };
 
-  const events: ContainerEvent[] = [];
-  let done = false;
-  let resolveWait: (() => void) | null = null;
-
+  const queue = new AsyncEventQueue<ContainerEvent>();
   const proc = spawn('docker', dockerArgs(['logs', '-f', '--tail', String(lines), name]), {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-
-  const pushEvent = (event: ContainerEvent) => {
-    events.push(event);
-    if (resolveWait) {
-      resolveWait();
-      resolveWait = null;
-    }
-  };
 
   const processStream = (stream: 'stdout' | 'stderr', data: Buffer) => {
     const text = data.toString();
     for (const line of text.split('\n')) {
       if (line) {
-        pushEvent({ type: 'container_log', name, line, stream, timestamp: Date.now() });
+        queue.push({ type: 'container_log', name, line, stream, timestamp: Date.now() });
       }
     }
   };
@@ -558,25 +527,16 @@ export async function* streamContainerLogs(
   proc.stderr.on('data', (data: Buffer) => processStream('stderr', data));
 
   proc.on('close', () => {
-    pushEvent({ type: 'container_stop', name, timestamp: Date.now() });
-    done = true;
+    queue.push({ type: 'container_stop', name, timestamp: Date.now() });
+    queue.end();
   });
 
   proc.on('error', (err) => {
-    pushEvent({ type: 'container_error', name, error: err.message, timestamp: Date.now() });
-    done = true;
+    queue.push({ type: 'container_error', name, error: err.message, timestamp: Date.now() });
+    queue.end();
   });
 
-  while (!done || events.length > 0) {
-    if (events.length > 0) {
-      yield events.shift()!;
-    } else {
-      await new Promise<void>((resolve) => {
-        resolveWait = resolve;
-        setTimeout(resolve, 1000);
-      });
-    }
-  }
+  yield* queue.stream();
 }
 
 // =====================================================================
@@ -602,6 +562,57 @@ export async function dockerExec(args: string[], timeoutMs = 10_000): Promise<st
 // =====================================================================
 // Internal Helpers
 // =====================================================================
+
+/**
+ * A minimal single-consumer async queue used to bridge Node event-emitter
+ * callbacks (which cannot `yield`) into an `AsyncGenerator`.
+ *
+ * Producers call {@link push} from stream/close/error handlers and {@link end}
+ * exactly once when the source is exhausted. The consumer drains it via
+ * {@link stream}, which blocks on a promise (no busy-polling) until the next
+ * item arrives or the queue ends.
+ */
+class AsyncEventQueue<T> {
+  private items: T[] = [];
+  private waiting: Array<(result: IteratorResult<T>) => void> = [];
+  private ended = false;
+
+  /** Enqueue an item, waking a blocked consumer if present. */
+  push(item: T): void {
+    if (this.ended) return;
+    const resolve = this.waiting.shift();
+    if (resolve) {
+      resolve({ value: item, done: false });
+    } else {
+      this.items.push(item);
+    }
+  }
+
+  /** Signal that no more items will be produced. */
+  end(): void {
+    if (this.ended) return;
+    this.ended = true;
+    while (this.waiting.length > 0) {
+      this.waiting.shift()!({ value: undefined as never, done: true });
+    }
+  }
+
+  /** Async iterator that yields queued items until {@link end} is called. */
+  async *stream(): AsyncGenerator<T> {
+    while (true) {
+      if (this.items.length > 0) {
+        yield this.items.shift()!;
+        continue;
+      }
+      if (this.ended) return;
+      const result = await new Promise<IteratorResult<T>>((resolve) => {
+        this.waiting.push(resolve);
+      });
+      if (result.done) return;
+      yield result.value;
+    }
+  }
+}
 
 /**
  * Async safe execution — returns output or empty string on failure.

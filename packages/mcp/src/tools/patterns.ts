@@ -24,7 +24,7 @@ export async function handlePatterns(
   params: PatternsParams,
   sessionManager: SessionManager,
 ): Promise<PatternsResult> {
-  const session = sessionManager.getOrThrow(params.projectPath);
+  const session = await sessionManager.ensure(params.projectPath);
 
   if (!session.knowledgeStore) {
     const { SessionError } = await import('../session.js');

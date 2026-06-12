@@ -31,7 +31,7 @@ export async function handleTrends(
   params: TrendsParams,
   sessionManager: SessionManager,
 ): Promise<TrendsResult> {
-  const session = sessionManager.getOrThrow(params.projectPath);
+  const session = await sessionManager.ensure(params.projectPath);
 
   if (!session.historyStore) {
     const { SessionError } = await import('../session.js');

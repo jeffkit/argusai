@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.tsbuildinfo
+.worktrees/
 .env
 .env.*
 !.env.example
@@ -16,3 +17,10 @@ examples/as-mate/
 **/.argusai/*.db
 **/.argusai/*.db-shm
 **/.argusai/*.db-wal
+
+# Stray SQLite databases (guard against accidental commits at repo/package roots)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3

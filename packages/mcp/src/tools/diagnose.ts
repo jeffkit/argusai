@@ -18,7 +18,7 @@ export async function handleDiagnose(
   params: DiagnoseParams,
   sessionManager: SessionManager,
 ): Promise<DiagnosticResult> {
-  const session = sessionManager.getOrThrow(params.projectPath);
+  const session = await sessionManager.ensure(params.projectPath);
 
   if (!session.historyStore || !session.knowledgeStore) {
     const { SessionError } = await import('../session.js');

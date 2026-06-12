@@ -184,4 +184,53 @@ describe('SessionManager', () => {
       expect(manager.has('/project/b')).toBe(true);
     });
   });
+
+  describe('ensure (lazy session load)', () => {
+    it('should return the existing session without touching the filesystem', async () => {
+      const manager = new SessionManager();
+      const created = manager.create('/project/a', makeConfig('project-a'), '/project/a/e2e.yaml');
+
+      const ensured = await manager.ensure('/project/a');
+      expect(ensured).toBe(created);
+      expect(manager.size).toBe(1);
+    });
+
+    it('should lazily create a session from e2e.yaml when none exists', async () => {
+      const fs = await import('node:fs/promises');
+      const os = await import('node:os');
+      const path = await import('node:path');
+
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'argusai-ensure-'));
+      try {
+        await fs.writeFile(
+          path.join(dir, 'e2e.yaml'),
+          [
+            'version: "1"',
+            'project:',
+            '  name: lazy-project',
+            'resilience:',
+            '  preflight:',
+            '    enabled: false',
+            'history:',
+            '  enabled: false',
+          ].join('\n'),
+        );
+
+        const manager = new SessionManager();
+        expect(manager.has(dir)).toBe(false);
+
+        const session = await manager.ensure(dir);
+        expect(session.config.project.name).toBe('lazy-project');
+        expect(manager.has(dir)).toBe(true);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('should throw CONFIG_NOT_FOUND when no config exists and no session', async () => {
+      const manager = new SessionManager();
+      await expect(manager.ensure('/nonexistent/project/path'))
+        .rejects.toMatchObject({ code: 'CONFIG_NOT_FOUND' });
+    });
+  });
 });

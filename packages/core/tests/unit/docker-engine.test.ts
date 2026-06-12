@@ -285,9 +285,12 @@ describe('docker-engine', () => {
       expect(buildImageMatch).toBeTruthy();
       const buildImageSrc = buildImageMatch![0];
 
+      // Captures build_log events and bridges emitter callbacks via the
+      // promise-based AsyncEventQueue (no busy-polling timeout).
       expect(buildImageSrc).toContain('build_log');
-      expect(buildImageSrc).toContain('pushEvent');
-      expect(buildImageSrc).toContain('events.shift()');
+      expect(buildImageSrc).toContain('AsyncEventQueue');
+      expect(buildImageSrc).toContain('queue.stream()');
+      expect(buildImageSrc).not.toContain('setTimeout(resolve, 1000)');
       expect(buildImageSrc).not.toContain("We can't yield from inside a callback");
     });
 
