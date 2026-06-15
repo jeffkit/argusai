@@ -1,6 +1,6 @@
 # ArgusAI 插件开发指南
 
-> 最后更新：2026-05-27
+> 最后更新：2026-06-15
 
 本文档面向希望扩展 ArgusAI 功能的开发者，介绍如何通过 `e2e.yaml` 的 `plugins` 字段加载自定义插件模块。
 
@@ -76,6 +76,28 @@ tests:
       id: api
       file: tests/api.yaml
 ```
+
+> **TypeScript 插件须先编译**
+>
+> 如果你的插件使用 TypeScript 编写（例如 `plugins/src/index.ts`），在运行测试前必须先执行编译：
+>
+> ```bash
+> cd e2e/plugins && npm run build   # 生成 dist/index.js
+> ```
+>
+> `e2e.yaml` 中引用的是编译产物：
+>
+> ```yaml
+> plugins:
+>   - ./plugins/dist/index.js   # 指向 tsc 编译后的 JS 文件
+> ```
+>
+> 若 `dist/index.js` 不存在，ArgusAI 会报告：
+> ```
+> Plugin file not found: .../plugins/dist/index.js
+> Hint: Did you forget to build the plugin?
+> Run: cd .../plugins && npm run build
+> ```
 
 ### 3. 在测试用例中使用自定义断言
 

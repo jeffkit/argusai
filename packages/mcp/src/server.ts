@@ -51,6 +51,16 @@ interface McpToolResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: { code: string; message: string; details?: unknown };
+  /**
+   * Current session lifecycle state for the project, or "none" when no session
+   * exists. Included in every response so AI agents can track environment state
+   * without needing a separate argus_status call.
+   *
+   * Values: "initialized" | "built" | "running" | "stopped" | "none"
+   */
+  sessionState?: string;
+  /** Non-fatal issues encountered during the operation (e.g. history write failures). */
+  warnings?: string[];
   timestamp: number;
 }
 
@@ -59,6 +69,30 @@ function successResponse<T>(data: T): { content: Array<{ type: 'text'; text: str
   const envelope: McpToolResponse<T> = {
     success: true,
     data,
+    timestamp: Date.now(),
+  };
+  return { content: [{ type: 'text' as const, text: JSON.stringify(envelope) }] };
+}
+
+/**
+ * Wrap tool result data in a success envelope that includes the current
+ * session state. Use this for lifecycle tools (init/build/setup/run/clean)
+ * so AI agents always know what phase the project is in.
+ */
+function successResponseWithState<T>(
+  data: T,
+  sessionManager: SessionManager,
+  projectPath: string,
+  warnings?: string[],
+): { content: Array<{ type: 'text'; text: string }> } {
+  const sessionState = sessionManager.has(projectPath)
+    ? sessionManager.getOrThrow(projectPath).state
+    : 'none';
+  const envelope: McpToolResponse<T> = {
+    success: true,
+    data,
+    sessionState,
+    ...(warnings && warnings.length > 0 ? { warnings } : {}),
     timestamp: Date.now(),
   };
   return { content: [{ type: 'text' as const, text: JSON.stringify(envelope) }] };
@@ -87,25 +121,25 @@ function handleError(err: unknown): { content: Array<{ type: 'text'; text: strin
 }
 
 /**
- * Resolve the effective project path for a tool call (F11 fix).
+ * Resolve the effective project path for a tool call.
  *
  * Resolution order:
  *   1. Explicit `projectPath` from the tool parameters (absolute path required)
  *   2. `ARGUS_PROJECT_PATH` environment variable (set once at server startup)
- *   3. `process.cwd()` — last resort, allows agents running in the project root
- *      to omit projectPath entirely.
  *
- * @throws {SessionError} PROJECT_PATH_REQUIRED when none of the above resolves
- *   to a non-empty string.
+ * NOTE: process.cwd() is intentionally NOT used as a fallback. Silently
+ * running tests in the wrong directory causes hard-to-debug failures,
+ * especially for AI agents that may be invoked from arbitrary working dirs.
+ *
+ * @throws {SessionError} PROJECT_PATH_REQUIRED when neither source provides a path.
  */
 function resolveProjectPath(projectPath?: string): string {
-  const resolved = projectPath?.trim()
-    || process.env['ARGUS_PROJECT_PATH']?.trim()
-    || '';
+  const resolved = projectPath?.trim() || process.env['ARGUS_PROJECT_PATH']?.trim();
   if (!resolved) {
     throw new SessionError(
       'PROJECT_PATH_REQUIRED',
-      'projectPath is required. Pass it as a tool parameter or set the ARGUS_PROJECT_PATH environment variable.',
+      'projectPath is required. Pass it as a tool parameter or set the ARGUS_PROJECT_PATH environment variable. ' +
+      'Do not rely on the current working directory — it may differ from the project root.',
     );
   }
   return resolved;
@@ -153,7 +187,7 @@ export function createServer(options?: CreateServerOptions): {
       try {
         const projectPath = resolveProjectPath(params.projectPath);
         const result = await handleInit({ ...params, projectPath }, sessionManager);
-        return successResponse(result);
+        return successResponseWithState(result, sessionManager, projectPath);
       } catch (err) {
         return handleError(err);
       }
@@ -164,7 +198,7 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_build',
     {
-      projectPath: z.string().optional().describe('[lifecycle] Project path (must have active session). STEP 2 of 5: builds Docker image(s). Optional when ARGUS_PROJECT_PATH is set.'),
+      projectPath: z.string().optional().describe('[lifecycle] Project path (must have active session from argus_init). STEP 2 of 5: builds Docker image(s). Optional when ARGUS_PROJECT_PATH is set.'),
       noCache: z.boolean().optional().describe('Disable Docker layer cache'),
       service: z.string().optional().describe('Build specific service (multi-service mode)'),
       useExisting: z.boolean().optional().describe('Skip build if image already exists locally'),
@@ -173,7 +207,7 @@ export function createServer(options?: CreateServerOptions): {
       try {
         const projectPath = resolveProjectPath(params.projectPath);
         const result = await handleBuild({ ...params, projectPath }, sessionManager, platform);
-        return successResponse(result);
+        return successResponseWithState(result, sessionManager, projectPath);
       } catch (err) {
         return handleError(err);
       }
@@ -191,7 +225,7 @@ export function createServer(options?: CreateServerOptions): {
       try {
         const projectPath = resolveProjectPath(params.projectPath);
         const result = await handleSetup({ ...params, projectPath }, sessionManager);
-        return successResponse(result);
+        return successResponseWithState(result, sessionManager, projectPath);
       } catch (err) {
         return handleError(err);
       }
@@ -205,12 +239,16 @@ export function createServer(options?: CreateServerOptions): {
       projectPath: z.string().optional().describe('[lifecycle] Project path (must have running environment). STEP 4 of 5: executes all or filtered test suites. Optional when ARGUS_PROJECT_PATH is set.'),
       filter: z.string().optional().describe('Suite ID filter (comma-separated for multiple)'),
       parallel: z.boolean().optional().describe('Override parallel execution setting'),
+      maxFailures: z.number().optional().default(20).describe(
+        'Max failed cases to include in response (default: 20). Prevents context overflow in large suites. ' +
+        'Passed cases are always summarised by count only. Use argus_diagnose for full failure details.',
+      ),
     },
     async (params) => {
       try {
         const projectPath = resolveProjectPath(params.projectPath);
         const result = await handleRun({ ...params, projectPath }, sessionManager, formatter, platform);
-        return successResponse(result);
+        return successResponseWithState(result, sessionManager, projectPath, result.warnings);
       } catch (err) {
         return handleError(err);
       }
@@ -221,14 +259,15 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_run_suite',
     {
-      projectPath: z.string().optional().describe('[lifecycle] Project path. Runs a single named suite — use instead of argus_run when you only need one suite. Optional when ARGUS_PROJECT_PATH is set.'),
+      projectPath: z.string().optional().describe('[lifecycle] Project path. Runs a single named suite with full per-step output — prefer argus_run for batch execution, use this for focused debugging. Optional when ARGUS_PROJECT_PATH is set.'),
       suiteId: z.string().describe('Suite identifier to run'),
+      maxFailures: z.number().optional().default(20).describe('Max failed cases to include in response (default: 20).'),
     },
     async (params) => {
       try {
         const projectPath = resolveProjectPath(params.projectPath);
         const result = await handleRunSuite({ ...params, projectPath }, sessionManager, formatter, platform);
-        return successResponse(result);
+        return successResponseWithState(result, sessionManager, projectPath, result.warnings);
       } catch (err) {
         return handleError(err);
       }
@@ -239,12 +278,12 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_status',
     {
-      projectPath: z.string().describe('[lifecycle] Project path. Shows current container/network/session status.'),
+      projectPath: z.string().describe('[lifecycle] Project path. Shows current container/network/session status. Check sessionState in any response first — only call this for detailed per-container info.'),
     },
     async (params) => {
       try {
         const result = await handleStatus(params, sessionManager);
-        return successResponse(result);
+        return successResponseWithState(result, sessionManager, params.projectPath);
       } catch (err) {
         return handleError(err);
       }
@@ -263,7 +302,7 @@ export function createServer(options?: CreateServerOptions): {
     async (params) => {
       try {
         const result = await handleLogs(params, sessionManager);
-        return successResponse(result);
+        return successResponseWithState(result, sessionManager, params.projectPath);
       } catch (err) {
         return handleError(err);
       }
@@ -281,7 +320,8 @@ export function createServer(options?: CreateServerOptions): {
       try {
         const projectPath = resolveProjectPath(params.projectPath);
         const result = await handleClean({ ...params, projectPath }, sessionManager);
-        return successResponse(result);
+        // After clean, session is removed — state will be "none"
+        return successResponseWithState(result, sessionManager, projectPath);
       } catch (err) {
         return handleError(err);
       }
@@ -573,7 +613,7 @@ export function createServer(options?: CreateServerOptions): {
     async (params) => {
       try {
         const result = await handleRebuild(params, sessionManager, platform);
-        return successResponse(result);
+        return successResponseWithState(result, sessionManager, params.projectPath);
       } catch (err) {
         return handleError(err);
       }
@@ -592,7 +632,7 @@ export function createServer(options?: CreateServerOptions): {
     async (params) => {
       try {
         const result = await handleDev(params, sessionManager, platform);
-        return successResponse(result);
+        return successResponseWithState(result, sessionManager, params.projectPath);
       } catch (err) {
         return handleError(err);
       }

@@ -15,6 +15,7 @@
  * - `plugin.setup()` is awaited (if defined)
  */
 
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { PluginModule } from './types.js';
@@ -24,6 +25,14 @@ import { globalAssertionPluginRegistry } from './assertion-plugin-registry.js';
 export interface LoadedPlugin {
   name: string;
   teardown?: () => Promise<void> | void;
+}
+
+/**
+ * Return `true` if the specifier refers to a local filesystem path
+ * (absolute or relative `./` / `../`).
+ */
+function isLocalPath(specifier: string): boolean {
+  return path.isAbsolute(specifier) || specifier.startsWith('./') || specifier.startsWith('../');
 }
 
 /**
@@ -40,6 +49,33 @@ function resolveSpecifier(specifier: string, configDir: string): string {
     return pathToFileURL(path.resolve(configDir, specifier)).href;
   }
   return specifier;
+}
+
+/**
+ * Assert that a local plugin file exists.
+ * Throws a human-friendly error (with a build hint when the path looks like
+ * a TypeScript compilation artefact) before `import()` can produce the
+ * unhelpful `ERR_MODULE_NOT_FOUND` message.
+ *
+ * @param specifier - Original specifier from e2e.yaml
+ * @param configDir - Directory that relative paths are resolved against
+ */
+async function assertPluginFileExists(specifier: string, configDir: string): Promise<void> {
+  const filePath = path.isAbsolute(specifier)
+    ? specifier
+    : path.resolve(configDir, specifier);
+
+  try {
+    await fs.access(filePath);
+  } catch {
+    const isDistArtifact = /[\\/]dist[\\/]/.test(filePath);
+    const hint = isDistArtifact
+      ? `\nHint: "${filePath}" looks like a compiled TypeScript artifact. ` +
+        `Did you forget to build the plugin?\n` +
+        `Run: cd ${path.dirname(path.dirname(filePath))} && npm run build`
+      : '';
+    throw new Error(`Plugin file not found: ${filePath}${hint}`);
+  }
 }
 
 /**
@@ -84,6 +120,12 @@ export async function loadPlugins(
 
   for (const specifier of plugins) {
     const resolved = resolveSpecifier(specifier, configDir);
+
+    // For local-path plugins, verify the file exists before import() so we
+    // can surface a clear, actionable error instead of a raw ERR_MODULE_NOT_FOUND.
+    if (isLocalPath(specifier)) {
+      await assertPluginFileExists(specifier, configDir);
+    }
 
     let mod: Record<string, unknown>;
     try {

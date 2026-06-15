@@ -32,6 +32,12 @@ export interface RunResult {
     skipped: number;
     cases: AIFriendlyTestResult[];
   }>;
+  /** True when failed cases were truncated to maxFailures limit. */
+  truncated?: boolean;
+  /** Total failed cases before truncation (only set when truncated=true). */
+  totalFailedCases?: number;
+  /** Non-fatal warnings encountered during the run (e.g. history write failure). */
+  warnings?: string[];
 }
 
 /**
@@ -45,7 +51,7 @@ export interface RunResult {
  * @throws {SessionError} NOT_RUNNING if setup not done, SUITE_NOT_FOUND if filter matches nothing
  */
 export async function handleRun(
-  params: { projectPath: string; filter?: string; parallel?: boolean },
+  params: { projectPath: string; filter?: string; parallel?: boolean; maxFailures?: number },
   sessionManager: SessionManager,
   formatter: ResultFormatter,
   platform?: PlatformServices,
@@ -76,7 +82,7 @@ export async function handleRun(
     }
   }
 
-  return executeSuites(suites, session, formatter, sessionManager.eventBus, platform, params.parallel);
+  return executeSuites(suites, session, formatter, sessionManager.eventBus, platform, params.parallel, params.maxFailures ?? 20);
 }
 
 /**
@@ -90,7 +96,7 @@ export async function handleRun(
  * @throws {SessionError} NOT_RUNNING if setup not done, SUITE_NOT_FOUND if suiteId not found
  */
 export async function handleRunSuite(
-  params: { projectPath: string; suiteId: string },
+  params: { projectPath: string; suiteId: string; maxFailures?: number },
   sessionManager: SessionManager,
   formatter: ResultFormatter,
   platform?: PlatformServices,
@@ -110,7 +116,7 @@ export async function handleRunSuite(
     throw new SessionError('SUITE_NOT_FOUND', `Suite "${params.suiteId}" not found in configuration`);
   }
 
-  return executeSuites(suites, session, formatter, sessionManager.eventBus, platform);
+  return executeSuites(suites, session, formatter, sessionManager.eventBus, platform, undefined, params.maxFailures ?? 20);
 }
 
 async function executeSuites(
@@ -120,12 +126,14 @@ async function executeSuites(
   bus?: import('argusai-core').SSEBus,
   platform?: PlatformServices,
   parallelOverride?: boolean,
+  maxFailures: number = 20,
 ): Promise<RunResult> {
   const totalStart = Date.now();
   const suiteResults: RunResult['suites'] = [];
   let totalPassed = 0;
   let totalFailed = 0;
   let totalSkipped = 0;
+  const warnings: string[] = [];
 
   bus?.emit('activity', {
     event: 'activity_start',
@@ -171,10 +179,16 @@ async function executeSuites(
       bus?.emit('test', { event: event.type, data: event });
     }
 
-    // Aggregate results per suite by matching suite_start/suite_end events
+    // Aggregate results per suite.
+    // M4 fix: derive duration from suite_start/suite_end events instead of
+    // measuring after the fact (which yields ~0ms since execution is already done).
     for (const { suiteConfig } of suiteConfigs) {
-      const suiteStart = Date.now();
       const suiteEvents = allEvents.filter(e => 'suite' in e && e.suite === suiteConfig.name);
+      const startEv = suiteEvents.find(e => e.type === 'suite_start') as { timestamp: number } | undefined;
+      const endEv   = suiteEvents.find(e => e.type === 'suite_end')   as { timestamp: number; duration?: number } | undefined;
+      // Prefer the engine-reported duration; fall back to timestamp diff; then 0.
+      const duration = endEv?.duration ?? (startEv && endEv ? endEv.timestamp - startEv.timestamp : 0);
+
       const cases = formatter.formatEvents(suiteEvents, suiteConfig.name);
       let suitePassed = 0;
       let suiteFailed = 0;
@@ -191,7 +205,7 @@ async function executeSuites(
         id: suiteConfig.id,
         name: suiteConfig.name,
         status: suiteFailed > 0 ? 'failed' : 'passed',
-        duration: Date.now() - suiteStart,
+        duration,
         passed: suitePassed,
         failed: suiteFailed,
         skipped: suiteSkipped,
@@ -202,12 +216,14 @@ async function executeSuites(
 
   // ---- External-runner suites (vitest, pytest, shell, exec, playwright) ----
   // These runners are always sequential; parallel support requires runner-level changes.
+  // M6 fix: create registry once outside the loop instead of once per suite.
+  const registry = externalSuites.length > 0 ? await createDefaultRegistry() : null;
+
   for (const suiteConfig of externalSuites) {
     const events: TestEvent[] = [];
     const suiteStart = Date.now();
 
-    const registry = await createDefaultRegistry();
-    const runner = registry.get(suiteConfig.runner!);
+    const runner = registry?.get(suiteConfig.runner!);
     if (runner) {
       const cwd = session.projectPath;
       const target = suiteConfig.file ?? suiteConfig.command ?? '';
@@ -257,7 +273,9 @@ async function executeSuites(
     data: { id: `run-${totalStart}`, source: 'ai', operation: 'run', project: session.config.project.name, status: totalFailed > 0 ? 'failed' : 'success', startTime: totalStart, endTime: Date.now() },
   });
 
-  const runResult: RunResult = {
+  // Build a raw result (all cases, no truncation) for history persistence.
+  // History needs the full record; the AI-facing response gets a trimmed version.
+  const rawResult: RunResult = {
     status: totalFailed > 0 ? 'failed' : 'passed',
     totals: { passed: totalPassed, failed: totalFailed, skipped: totalSkipped, total },
     duration: totalDuration,
@@ -282,14 +300,21 @@ async function executeSuites(
     // Primary path: persist via DrizzleHistoryStore
     try {
       session.historyRecorder.recordRun(
-        runResult,
+        rawResult,
         session.config.project.name,
         session.projectPath,
         session.configPath,
         'mcp',
       );
-    } catch {
-      // Graceful degradation: history recording failure is non-critical
+    } catch (err) {
+      // M5 fix: surface non-fatal history failures as warnings instead of silently
+      // swallowing them. The run result is still returned; only persistence failed.
+      const msg = (err as Error).message ?? String(err);
+      if (msg.includes('SQLITE_CORRUPT') || msg.includes('no such table') || msg.includes('schema')) {
+        warnings.push(`History write failed (critical DB error): ${msg}. Run argus_rebuild to reset the environment.`);
+      } else {
+        warnings.push(`History write failed (transient): ${msg}`);
+      }
     }
   } else if (platform?.store) {
     // Fallback path: Drizzle not available (memory storage or history disabled).
@@ -321,7 +346,30 @@ async function executeSuites(
     ).catch(() => {});
   }
 
-  return runResult;
+  // A2 fix: build the AI-facing response with truncated failed cases to prevent
+  // context overflow. Passed cases are represented by counts only.
+  // History was already recorded from rawResult (the full, untruncated data).
+  let truncated = false;
+  let failedCasesEmitted = 0;
+  const truncatedSuites = suiteResults.map(sr => {
+    const failedCases = sr.cases.filter(c => c.status === 'failed');
+    const skippedCases = sr.cases.filter(c => c.status === 'skipped');
+    const remaining = maxFailures - failedCasesEmitted;
+    const clippedFailed = failedCases.slice(0, Math.max(0, remaining));
+    if (clippedFailed.length < failedCases.length) truncated = true;
+    failedCasesEmitted += clippedFailed.length;
+    return {
+      ...sr,
+      cases: [...clippedFailed, ...skippedCases],
+    };
+  });
+
+  return {
+    ...rawResult,
+    suites: truncatedSuites,
+    ...(truncated ? { truncated: true, totalFailedCases: totalFailed } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
 }
 
 /**

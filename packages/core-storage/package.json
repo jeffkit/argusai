@@ -1,22 +1,21 @@
 {
-  "name": "argusai-mcp",
+  "name": "argusai-core-storage",
   "version": "0.13.0",
   "type": "module",
-  "description": "ArgusAI MCP server — expose E2E testing tools to AI coding agents via Model Context Protocol",
+  "description": "ArgusAI storage layer — SQLite/Drizzle history, knowledge base, and team sync for E2E test results",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/jeffkit/argusai.git",
-    "directory": "packages/mcp"
+    "directory": "packages/core-storage"
   },
   "keywords": [
     "argusai",
-    "mcp",
-    "ai",
+    "e2e",
     "testing",
-    "model-context-protocol",
-    "cursor",
-    "claude"
+    "sqlite",
+    "drizzle",
+    "history"
   ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -25,9 +24,6 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     }
-  },
-  "bin": {
-    "argusai-mcp": "./dist/index.js"
   },
   "files": [
     "dist/",
@@ -39,13 +35,25 @@
     "test:run": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.11.0",
-    "argusai-core": "workspace:*",
-    "async-mutex": "^0.5.0",
-    "zod": "^3.23.0"
+    "better-sqlite3": "^12.6.2",
+    "drizzle-orm": "^0.39.0"
+  },
+  "peerDependencies": {
+    "pg": ">=8.0.0",
+    "mysql2": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    },
+    "mysql2": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
+    "drizzle-kit": "^0.30.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   }

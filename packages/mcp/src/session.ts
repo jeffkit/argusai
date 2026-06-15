@@ -23,6 +23,8 @@
  */
 
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { Mutex } from 'async-mutex';
 import type { E2EConfig, SSEBus, PortMapping, CircuitBreakerState, HistoryConfig, DrizzleHistoryStoreWithDb } from 'argusai-core';
 import type { HistoryStore, KnowledgeStore } from 'argusai-core';
 import { CircuitBreaker, createHistoryStore, HistoryRecorder, SQLiteHistoryStore, SQLiteKnowledgeStore, NoopKnowledgeStore, PortAllocator, DrizzleHistoryStore, DrizzleKnowledgeStore, createSqliteDbFromDatabase, loadConfig } from 'argusai-core';
@@ -127,29 +129,41 @@ export function deriveNamespace(config: E2EConfig): string {
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
 // =====================================================================
-// SessionMutex — prevents concurrent operations on the same session
+// AsyncSessionMutex — true async per-session mutex using async-mutex.
+//
+// Replaces the old synchronous SessionMutex which could not protect
+// critical sections across await boundaries (e.g. setup + healthcheck).
+// Each session key gets its own Mutex instance; concurrent callers
+// await the same Mutex and are serialized correctly even across I/O.
 // =====================================================================
 
-class SessionMutex {
-  private locks = new Map<string, { holder: string; acquired: number }>();
+class AsyncSessionMutex {
+  private mutexes = new Map<string, Mutex>();
 
-  acquire(key: string, operation: string): void {
-    const existing = this.locks.get(key);
-    if (existing) {
-      throw new SessionError(
-        'INVALID_STATE',
-        `Concurrent operation rejected: "${operation}" cannot run while "${existing.holder}" is in progress`,
-      );
+  private get(key: string): Mutex {
+    let m = this.mutexes.get(key);
+    if (!m) {
+      m = new Mutex();
+      this.mutexes.set(key, m);
     }
-    this.locks.set(key, { holder: operation, acquired: Date.now() });
+    return m;
   }
 
-  release(key: string): void {
-    this.locks.delete(key);
+  /**
+   * Run `fn` exclusively for `key`. Concurrent callers queue behind the
+   * current holder and resume in FIFO order when it releases the lock.
+   */
+  async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    return this.get(key).runExclusive(fn);
   }
 
   isLocked(key: string): boolean {
-    return this.locks.has(key);
+    return this.mutexes.get(key)?.isLocked() ?? false;
+  }
+
+  /** Release the mutex map entry after a session is removed. */
+  delete(key: string): void {
+    this.mutexes.delete(key);
   }
 }
 
@@ -173,7 +187,7 @@ export class SessionManager {
    * Prevents concurrent `ensure()` calls from racing to load the same config.
    */
   private ensurePromises = new Map<string, Promise<ProjectSession>>();
-  private mutex = new SessionMutex();
+  private mutex = new AsyncSessionMutex();
   private ttlMs: number;
   private cleanupTimer?: ReturnType<typeof setInterval>;
   public eventBus?: SSEBus;
@@ -372,7 +386,7 @@ export class SessionManager {
       lastAccessedAt: now,
       state: 'initialized',
       clientId,
-      runId: Date.now().toString(36),
+      runId: randomUUID(),
       activeGuardians: new Map(),
       circuitBreaker,
       historyStore,
@@ -395,7 +409,7 @@ export class SessionManager {
     if (session) {
       PortAllocator.instance.releaseSession(session.runId);
     }
-    this.mutex.release(k);
+    this.mutex.delete(k);
     this.sessions.delete(k);
   }
 
@@ -414,12 +428,26 @@ export class SessionManager {
     session.state = newState;
   }
 
-  acquireLock(projectPath: string, operation: string, clientId: string = SessionManager.DEFAULT_CLIENT): void {
-    this.mutex.acquire(this.key(clientId, projectPath), operation);
-  }
-
-  releaseLock(projectPath: string, clientId: string = SessionManager.DEFAULT_CLIENT): void {
-    this.mutex.release(this.key(clientId, projectPath));
+  /**
+   * Run `fn` exclusively for this project, serializing concurrent tool calls.
+   *
+   * This replaces the old synchronous acquireLock/releaseLock pair, which
+   * could not protect critical sections that span multiple await points
+   * (e.g. setup's health-check loop). Callers queue and resume in FIFO order.
+   *
+   * @example
+   * ```ts
+   * const result = await sessionManager.withLock(projectPath, async () => {
+   *   await handleSetupCore(params, session);
+   * });
+   * ```
+   */
+  async withLock<T>(
+    projectPath: string,
+    fn: () => Promise<T>,
+    clientId: string = SessionManager.DEFAULT_CLIENT,
+  ): Promise<T> {
+    return this.mutex.run(this.key(clientId, projectPath), fn);
   }
 
   isLocked(projectPath: string, clientId: string = SessionManager.DEFAULT_CLIENT): boolean {
@@ -476,7 +504,7 @@ export class SessionManager {
           mock.server.close().catch(() => {});
         }
         PortAllocator.instance.releaseSession(session.runId);
-        this.mutex.release(key);
+        this.mutex.delete(key);
         this.sessions.delete(key);
         expired.push(key);
       }

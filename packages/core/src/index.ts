@@ -212,18 +212,13 @@ export { ConsoleReporter, JSONReporter, HTMLReporter } from './reporter.js';
 // Resilience Subsystem
 export * from './resilience/index.js';
 
-// History Subsystem
-export * from './history/index.js';
+// ── Storage layer — re-exported from argusai-core-storage ────────────────
+// Fully backward-compatible: every symbol previously exported from the
+// inline history/knowledge/db/sync directories is now re-exported from the
+// dedicated argusai-core-storage package. New code should import directly
+// from 'argusai-core-storage'.
+export * from 'argusai-core-storage';
 export { HistoryConfigSchema } from './config-loader.js';
-
-// Knowledge Subsystem (Diagnostics & Suggestions)
-export * from './knowledge/index.js';
-
-// Database (Drizzle ORM layer)
-export * from './db/index.js';
-
-// Sync Infrastructure
-export * from './sync/index.js';
 
 // Workspace Manager
 export {

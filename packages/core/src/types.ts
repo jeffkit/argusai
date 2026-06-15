@@ -1,27 +1,9 @@
-// ==================== History Types (re-exported) ====================
+// ==================== History + Knowledge Types ====================
+// These types now live in argusai-core-storage. They are re-exported
+// from argusai-core's index.ts via `export * from 'argusai-core-storage'`.
+// Only import here what is needed internally within this file.
 
-import type { HistoryConfig as _HistoryConfig } from './history/types.js';
-
-export type {
-  TriggerSource,
-  StabilityLevel,
-  TestRunRecord,
-  TestCaseRunRecord,
-  FlakyInfo,
-  RunComparison,
-  ComparisonItem,
-  TrendDataPoint,
-  HistoryConfig,
-} from './history/types.js';
-
-// ==================== Knowledge Types (re-exported) ====================
-
-export type {
-  FailureCategory,
-  FailurePattern,
-  FixRecord,
-  DiagnosticResult,
-} from './knowledge/types.js';
+import type { HistoryConfig as _HistoryConfig } from 'argusai-core-storage';
 
 // ==================== Server Config ====================
 

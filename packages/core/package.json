@@ -1,6 +1,6 @@
 {
   "name": "argusai-core",
-  "version": "0.12.3",
+  "version": "0.13.0",
   "type": "module",
   "description": "ArgusAI core engine — Docker orchestration, test runners, and assertion engine for AI-native E2E testing",
   "license": "MIT",
@@ -39,6 +39,7 @@
   "dependencies": {
     "@readme/openapi-parser": "^4.0.0",
     "ajv": "^8.18.0",
+    "argusai-core-storage": "workspace:^",
     "better-sqlite3": "^12.6.2",
     "dotenv": "^16.4.0",
     "drizzle-orm": "^0.39.0",
@@ -50,8 +51,8 @@
   },
   "peerDependencies": {
     "@playwright/test": ">=1.40.0",
-    "pg": ">=8.0.0",
-    "mysql2": ">=3.0.0"
+    "mysql2": ">=3.0.0",
+    "pg": ">=8.0.0"
   },
   "peerDependenciesMeta": {
     "@playwright/test": {
