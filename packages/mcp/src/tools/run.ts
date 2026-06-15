@@ -7,9 +7,11 @@ import path from 'node:path';
 import {
   loadYAMLTests,
   executeYAMLSuite,
+  executeSuitesWithParallel,
   createDefaultRegistry,
   type TestEvent,
   type TestSuiteConfig,
+  type SuiteExecutionConfig,
   type AIFriendlyTestResult,
 } from 'argusai-core';
 import { SessionManager, SessionError } from '../session.js';
@@ -50,8 +52,7 @@ export async function handleRun(
 ): Promise<RunResult> {
   const session = sessionManager.getOrThrow(params.projectPath);
 
-  const isTestOnly = !session.config.service && (!session.config.services || session.config.services.length === 0);
-  if (session.state !== 'running' && !isTestOnly) {
+  if (session.state !== 'running' && !session.isTestOnly) {
     throw new SessionError('NOT_RUNNING', 'Environment not set up. Call argus_setup first.');
   }
 
@@ -75,7 +76,7 @@ export async function handleRun(
     }
   }
 
-  return executeSuites(suites, session, formatter, sessionManager.eventBus, platform);
+  return executeSuites(suites, session, formatter, sessionManager.eventBus, platform, params.parallel);
 }
 
 /**
@@ -96,8 +97,7 @@ export async function handleRunSuite(
 ): Promise<RunResult> {
   const session = sessionManager.getOrThrow(params.projectPath);
 
-  const isTestOnly = !session.config.service && (!session.config.services || session.config.services.length === 0);
-  if (session.state !== 'running' && !isTestOnly) {
+  if (session.state !== 'running' && !session.isTestOnly) {
     throw new SessionError('NOT_RUNNING', 'Environment not set up. Call argus_setup first.');
   }
 
@@ -119,6 +119,7 @@ async function executeSuites(
   formatter: ResultFormatter,
   bus?: import('argusai-core').SSEBus,
   platform?: PlatformServices,
+  parallelOverride?: boolean,
 ): Promise<RunResult> {
   const totalStart = Date.now();
   const suiteResults: RunResult['suites'] = [];
@@ -131,43 +132,93 @@ async function executeSuites(
     data: { id: `run-${totalStart}`, source: 'ai', operation: 'run', project: session.config.project.name, status: 'running', startTime: totalStart },
   });
 
-  const containerName = getContainerName(session.config);
-  const baseUrl = getBaseUrl(session.config);
-  const configVars = getConfigVars(session.config);
+  // Separate YAML suites from external-runner suites.
+  // Only YAML suites support parallel execution via executeSuitesWithParallel.
+  const yamlSuites = suites.filter(s => s.runner === 'yaml' || !s.runner);
+  const externalSuites = suites.filter(s => s.runner && s.runner !== 'yaml');
 
-  for (const suiteConfig of suites) {
+  // ---- YAML suites (supports parallel execution) ----
+  if (yamlSuites.length > 0) {
+    // Build per-suite configs. parallelOverride=true forces all suites parallel;
+    // otherwise respect each suite's own `parallel` flag.
+    // Each suite resolves its own baseUrl / vars from the service field (F04 fix).
+    const suiteConfigs: (SuiteExecutionConfig & { suiteConfig: TestSuiteConfig })[] = [];
+    for (const suiteConfig of yamlSuites) {
+      if (!suiteConfig.file) continue;
+      const filePath = path.resolve(session.projectPath, suiteConfig.file);
+      const yamlSuite = await loadYAMLTests(filePath);
+      const svcName = suiteConfig.service;
+      suiteConfigs.push({
+        suite: yamlSuite,
+        options: {
+          baseUrl: getBaseUrl(session.config, svcName),
+          variables: {
+            config: getConfigVars(session.config, svcName),
+            runtime: {},
+            env: { ...process.env } as Record<string, string>,
+          },
+          containerName: getContainerName(session.config, svcName),
+        },
+        parallel: parallelOverride ?? (suiteConfig.parallel ?? false),
+        suiteConfig,
+      });
+    }
+
+    const allEvents: TestEvent[] = [];
+    // executeSuitesWithParallel yields events from all suites in order
+    for await (const event of executeSuitesWithParallel(suiteConfigs)) {
+      allEvents.push(event);
+      bus?.emit('test', { event: event.type, data: event });
+    }
+
+    // Aggregate results per suite by matching suite_start/suite_end events
+    for (const { suiteConfig } of suiteConfigs) {
+      const suiteStart = Date.now();
+      const suiteEvents = allEvents.filter(e => 'suite' in e && e.suite === suiteConfig.name);
+      const cases = formatter.formatEvents(suiteEvents, suiteConfig.name);
+      let suitePassed = 0;
+      let suiteFailed = 0;
+      let suiteSkipped = 0;
+      for (const c of cases) {
+        if (c.status === 'passed') suitePassed++;
+        else if (c.status === 'failed') suiteFailed++;
+        else suiteSkipped++;
+      }
+      totalPassed += suitePassed;
+      totalFailed += suiteFailed;
+      totalSkipped += suiteSkipped;
+      suiteResults.push({
+        id: suiteConfig.id,
+        name: suiteConfig.name,
+        status: suiteFailed > 0 ? 'failed' : 'passed',
+        duration: Date.now() - suiteStart,
+        passed: suitePassed,
+        failed: suiteFailed,
+        skipped: suiteSkipped,
+        cases,
+      });
+    }
+  }
+
+  // ---- External-runner suites (vitest, pytest, shell, exec, playwright) ----
+  // These runners are always sequential; parallel support requires runner-level changes.
+  for (const suiteConfig of externalSuites) {
     const events: TestEvent[] = [];
     const suiteStart = Date.now();
 
-    if (suiteConfig.runner === 'yaml' || !suiteConfig.runner) {
-      if (suiteConfig.file) {
-        const filePath = path.resolve(session.projectPath, suiteConfig.file);
-        const yamlSuite = await loadYAMLTests(filePath);
-
-        for await (const event of executeYAMLSuite(yamlSuite, {
-          baseUrl,
-          variables: { config: configVars, runtime: {}, env: { ...process.env } as Record<string, string> },
-          containerName,
-        })) {
-          events.push(event);
-          bus?.emit('test', { event: event.type, data: event });
-        }
-      }
-    } else {
-      const registry = await createDefaultRegistry();
-      const runner = registry.get(suiteConfig.runner);
-      if (runner) {
-        const cwd = session.projectPath;
-        const target = suiteConfig.file ?? suiteConfig.command ?? '';
-        for await (const event of runner.run({
-          cwd,
-          target,
-          env: process.env as Record<string, string>,
-          timeout: 300_000,
-        })) {
-          events.push(event);
-          bus?.emit('test', { event: event.type, data: event });
-        }
+    const registry = await createDefaultRegistry();
+    const runner = registry.get(suiteConfig.runner!);
+    if (runner) {
+      const cwd = session.projectPath;
+      const target = suiteConfig.file ?? suiteConfig.command ?? '';
+      for await (const event of runner.run({
+        cwd,
+        target,
+        env: process.env as Record<string, string>,
+        timeout: 300_000,
+      })) {
+        events.push(event);
+        bus?.emit('test', { event: event.type, data: event });
       }
     }
 
@@ -213,8 +264,22 @@ async function executeSuites(
     suites: suiteResults,
   };
 
-  // Persist to history subsystem (HistoryRecorder)
+  // --- Storage layer responsibilities (F03 fix) ---
+  //
+  // Two separate stores serve distinct purposes:
+  //   1. DrizzleHistoryStore (session.historyRecorder) — the authoritative
+  //      SQLite-backed store for all history/trends/flaky/diagnose queries.
+  //      This is the ONLY store that should be used for persistent history.
+  //
+  //   2. legacy platform.store — a MemoryStore/FileStore used exclusively
+  //      for real-time Dashboard SSE activity feeds and short-lived stats.
+  //      It does NOT back any history queries. Only write here when Drizzle
+  //      history is NOT enabled (e.g. memory storage mode without historyRecorder).
+  //
+  // Do NOT write to both stores for the same run to avoid duplicate records.
+
   if (session.historyRecorder) {
+    // Primary path: persist via DrizzleHistoryStore
     try {
       session.historyRecorder.recordRun(
         runResult,
@@ -226,10 +291,9 @@ async function executeSuites(
     } catch {
       // Graceful degradation: history recording failure is non-critical
     }
-  }
-
-  // Persist test records (legacy store)
-  if (platform?.store) {
+  } else if (platform?.store) {
+    // Fallback path: Drizzle not available (memory storage or history disabled).
+    // Write to legacy store so the Dashboard still shows activity.
     for (const sr of suiteResults) {
       platform.store.saveTestRecord({
         id: `test-${totalStart}-${sr.id}`,
@@ -260,17 +324,39 @@ async function executeSuites(
   return runResult;
 }
 
-function getContainerName(config: import('argusai-core').E2EConfig): string | undefined {
+/**
+ * Look up a service by name. Falls back to the first service if name is
+ * undefined or not found. Returns undefined in test-only mode (no services).
+ */
+function resolveService(
+  config: import('argusai-core').E2EConfig,
+  serviceName?: string,
+) {
   if (config.services && config.services.length > 0) {
-    return config.services[0]!.container.name;
+    if (serviceName) {
+      const named = config.services.find(s => s.name === serviceName);
+      if (named) return named;
+    }
+    return config.services[0]!;
   }
-  return config.service?.container.name;
+  // Single-service mode — serviceName is ignored
+  return config.service ?? undefined;
 }
 
-function getBaseUrl(config: import('argusai-core').E2EConfig): string {
-  const svc = config.services?.[0] ?? config.service;
-  if (svc?.vars?.['base_url']) return svc.vars['base_url'];
+function getContainerName(
+  config: import('argusai-core').E2EConfig,
+  serviceName?: string,
+): string | undefined {
+  return resolveService(config, serviceName)?.container.name;
+}
+
+function getBaseUrl(
+  config: import('argusai-core').E2EConfig,
+  serviceName?: string,
+): string {
+  const svc = resolveService(config, serviceName);
   if (!svc) return 'http://localhost:3000';
+  if (svc.vars?.['base_url']) return svc.vars['base_url'];
 
   const ports = svc.container.ports;
   if (ports.length > 0) {
@@ -280,15 +366,10 @@ function getBaseUrl(config: import('argusai-core').E2EConfig): string {
   return 'http://localhost:3000';
 }
 
-function getConfigVars(config: import('argusai-core').E2EConfig): Record<string, string> {
-  const vars: Record<string, string> = {};
-  if (config.service?.vars) {
-    Object.assign(vars, config.service.vars);
-  }
-  if (config.services) {
-    for (const svc of config.services) {
-      if (svc.vars) Object.assign(vars, svc.vars);
-    }
-  }
-  return vars;
+function getConfigVars(
+  config: import('argusai-core').E2EConfig,
+  serviceName?: string,
+): Record<string, string> {
+  const svc = resolveService(config, serviceName);
+  return svc?.vars ? { ...svc.vars } : {};
 }

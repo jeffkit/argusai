@@ -153,6 +153,25 @@ export interface TestSuiteConfig {
   parallel?: boolean;
   /** Maximum concurrency for this suite's cases */
   concurrency?: number;
+  /**
+   * Target service name for multi-service projects.
+   * When set, the suite's baseUrl and configVars are resolved from this
+   * service's definition instead of the default first service.
+   * Must match a name in `services[]`. Ignored in single-service mode.
+   *
+   * @example
+   * ```yaml
+   * tests:
+   *   suites:
+   *     - id: api
+   *       service: api-server   # routes to services[name=api-server]
+   *       file: tests/api.yaml
+   *     - id: worker
+   *       service: worker       # routes to services[name=worker]
+   *       file: tests/worker.yaml
+   * ```
+   */
+  service?: string;
 }
 
 /** 预定义 API 端点 */

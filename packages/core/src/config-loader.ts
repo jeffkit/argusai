@@ -129,6 +129,10 @@ export const TestSuiteSchema = z.object({
   retry: RetryPolicySchema.optional().describe('Suite-level retry policy (overrides global)'),
   parallel: z.boolean().optional().describe('Enable parallel execution for this suite'),
   concurrency: z.number().optional().describe('Maximum concurrency for parallel test cases'),
+  service: z.string().optional().describe(
+    'Target service name for multi-service projects. ' +
+    'Resolves baseUrl and vars from the named service instead of the default first service.',
+  ),
 }).describe('Test suite configuration');
 
 /** Preset endpoint schema */

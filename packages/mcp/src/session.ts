@@ -5,9 +5,21 @@
  * Tracks loaded configuration, running containers, mock servers,
  * and the overall lifecycle state for each project.
  *
- * Multi-tenant: session keys are `clientId:projectPath` so different
- * clients can independently manage the same project. Includes TTL-based
- * auto-cleanup and per-session mutex.
+ * ## Multi-tenant design (F05 note)
+ *
+ * Session keys are `clientId:projectPath` to support multi-client isolation.
+ * However, the current MCP tool handlers do NOT inject a per-request clientId —
+ * they all fall back to {@link SessionManager.DEFAULT_CLIENT}.
+ *
+ * This means the multi-tenant machinery is correct but dormant.
+ * Activating it requires:
+ *   1. Reading the client ID from the MCP transport request context
+ *      (e.g. `request.meta?.clientId` in Streamable HTTP mode).
+ *   2. Passing it through every tool handler call.
+ *
+ * Until that is done, all sessions share a single "default" namespace and
+ * behave as single-tenant. If you need true multi-tenant isolation today,
+ * run a separate `npx argusai-mcp` process per client.
  */
 
 import path from 'node:path';
@@ -53,6 +65,13 @@ export interface ProjectSession {
    * sessions can be safely re-initialized by `argus_init`.
    */
   lazy?: boolean;
+  /**
+   * True when the project has no `service` / `services` definition.
+   * In test-only mode, argus_setup skips Docker operations and
+   * the session transitions directly from `initialized` to `running`.
+   * Fixed at session creation time — do not recompute from config at runtime.
+   */
+  isTestOnly: boolean;
 }
 
 const VALID_TRANSITIONS: Record<SessionState, SessionState[]> = {
@@ -148,6 +167,12 @@ export interface SessionManagerOptions {
 
 export class SessionManager {
   private sessions = new Map<string, ProjectSession>();
+  /**
+   * In-flight creation promises for `ensure()`.
+   * Keyed by the same `clientId:projectPath` string as `sessions`.
+   * Prevents concurrent `ensure()` calls from racing to load the same config.
+   */
+  private ensurePromises = new Map<string, Promise<ProjectSession>>();
   private mutex = new SessionMutex();
   private ttlMs: number;
   private cleanupTimer?: ReturnType<typeof setInterval>;
@@ -222,6 +247,35 @@ export class SessionManager {
       return this.getOrThrow(projectPath, clientId);
     }
 
+    const k = this.key(clientId, projectPath);
+
+    // If another concurrent ensure() is already loading this session, await
+    // its promise instead of racing to create a duplicate (F07 fix).
+    const inflight = this.ensurePromises.get(k);
+    if (inflight) return inflight;
+
+    const promise = this._ensureLoad(projectPath, configFile, clientId, k);
+    this.ensurePromises.set(k, promise);
+
+    try {
+      return await promise;
+    } finally {
+      this.ensurePromises.delete(k);
+    }
+  }
+
+  /** Internal: load config and create a lazy session. Called exclusively by ensure(). */
+  private async _ensureLoad(
+    projectPath: string,
+    configFile: string | undefined,
+    clientId: string,
+    k: string,
+  ): Promise<ProjectSession> {
+    // Double-check after acquiring: a concurrent ensure() may have finished.
+    if (this.sessions.has(k)) {
+      return this.sessions.get(k)!;
+    }
+
     const configPath = path.resolve(projectPath, configFile ?? 'e2e.yaml');
     let config: E2EConfig;
     try {
@@ -237,10 +291,11 @@ export class SessionManager {
       throw err;
     }
 
-    // Guard against a concurrent create() that may have raced in.
-    if (this.has(projectPath, clientId)) {
-      return this.getOrThrow(projectPath, clientId);
+    // Final check after async gap — another caller may have won the race.
+    if (this.sessions.has(k)) {
+      return this.sessions.get(k)!;
     }
+
     const session = this.create(projectPath, config, configPath, clientId);
     session.lazy = true;
     return session;
@@ -323,6 +378,8 @@ export class SessionManager {
       historyStore,
       historyRecorder,
       knowledgeStore,
+      // Fixed at creation time to avoid re-deriving from config at every run check.
+      isTestOnly: !config.service && (!config.services || config.services.length === 0),
     };
 
     this.sessions.set(k, session);

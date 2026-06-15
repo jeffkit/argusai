@@ -87,6 +87,31 @@ function handleError(err: unknown): { content: Array<{ type: 'text'; text: strin
 }
 
 /**
+ * Resolve the effective project path for a tool call (F11 fix).
+ *
+ * Resolution order:
+ *   1. Explicit `projectPath` from the tool parameters (absolute path required)
+ *   2. `ARGUS_PROJECT_PATH` environment variable (set once at server startup)
+ *   3. `process.cwd()` — last resort, allows agents running in the project root
+ *      to omit projectPath entirely.
+ *
+ * @throws {SessionError} PROJECT_PATH_REQUIRED when none of the above resolves
+ *   to a non-empty string.
+ */
+function resolveProjectPath(projectPath?: string): string {
+  const resolved = projectPath?.trim()
+    || process.env['ARGUS_PROJECT_PATH']?.trim()
+    || '';
+  if (!resolved) {
+    throw new SessionError(
+      'PROJECT_PATH_REQUIRED',
+      'projectPath is required. Pass it as a tool parameter or set the ARGUS_PROJECT_PATH environment variable.',
+    );
+  }
+  return resolved;
+}
+
+/**
  * Create and configure the MCP server with all 20 tools registered.
  *
  * When called without options, creates standalone instances.
@@ -110,16 +135,24 @@ export function createServer(options?: CreateServerOptions): {
   const formatter = new ResultFormatter();
   const platform = options?.platform ?? {};
 
+  // =====================================================================
+  // [lifecycle] Core workflow: init → build → setup → run → clean
+  // =====================================================================
+
   // Tool 1: argus_init
   server.tool(
     'argus_init',
     {
-      projectPath: z.string().describe('Absolute path to project directory containing e2e.yaml'),
+      projectPath: z.string().optional().describe(
+        '[lifecycle] Absolute path to project directory containing e2e.yaml. STEP 1 of 5: loads config and creates a session. ' +
+        'Optional when ARGUS_PROJECT_PATH env var is set.',
+      ),
       configFile: z.string().optional().describe('Config filename override (default: e2e.yaml)'),
     },
     async (params) => {
       try {
-        const result = await handleInit(params, sessionManager);
+        const projectPath = resolveProjectPath(params.projectPath);
+        const result = await handleInit({ ...params, projectPath }, sessionManager);
         return successResponse(result);
       } catch (err) {
         return handleError(err);
@@ -131,14 +164,15 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_build',
     {
-      projectPath: z.string().describe('Project path (must have active session)'),
+      projectPath: z.string().optional().describe('[lifecycle] Project path (must have active session). STEP 2 of 5: builds Docker image(s). Optional when ARGUS_PROJECT_PATH is set.'),
       noCache: z.boolean().optional().describe('Disable Docker layer cache'),
       service: z.string().optional().describe('Build specific service (multi-service mode)'),
       useExisting: z.boolean().optional().describe('Skip build if image already exists locally'),
     },
     async (params) => {
       try {
-        const result = await handleBuild(params, sessionManager, platform);
+        const projectPath = resolveProjectPath(params.projectPath);
+        const result = await handleBuild({ ...params, projectPath }, sessionManager, platform);
         return successResponse(result);
       } catch (err) {
         return handleError(err);
@@ -150,12 +184,13 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_setup',
     {
-      projectPath: z.string().describe('Project path (must have built images)'),
+      projectPath: z.string().optional().describe('[lifecycle] Project path (must have built images). STEP 3 of 5: starts network, mocks, and containers. Optional when ARGUS_PROJECT_PATH is set.'),
       timeout: z.string().optional().describe('Health check timeout override, e.g. "120s"'),
     },
     async (params) => {
       try {
-        const result = await handleSetup(params, sessionManager);
+        const projectPath = resolveProjectPath(params.projectPath);
+        const result = await handleSetup({ ...params, projectPath }, sessionManager);
         return successResponse(result);
       } catch (err) {
         return handleError(err);
@@ -167,13 +202,14 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_run',
     {
-      projectPath: z.string().describe('Project path (must have running environment)'),
+      projectPath: z.string().optional().describe('[lifecycle] Project path (must have running environment). STEP 4 of 5: executes all or filtered test suites. Optional when ARGUS_PROJECT_PATH is set.'),
       filter: z.string().optional().describe('Suite ID filter (comma-separated for multiple)'),
       parallel: z.boolean().optional().describe('Override parallel execution setting'),
     },
     async (params) => {
       try {
-        const result = await handleRun(params, sessionManager, formatter, platform);
+        const projectPath = resolveProjectPath(params.projectPath);
+        const result = await handleRun({ ...params, projectPath }, sessionManager, formatter, platform);
         return successResponse(result);
       } catch (err) {
         return handleError(err);
@@ -185,12 +221,13 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_run_suite',
     {
-      projectPath: z.string().describe('Project path'),
+      projectPath: z.string().optional().describe('[lifecycle] Project path. Runs a single named suite — use instead of argus_run when you only need one suite. Optional when ARGUS_PROJECT_PATH is set.'),
       suiteId: z.string().describe('Suite identifier to run'),
     },
     async (params) => {
       try {
-        const result = await handleRunSuite(params, sessionManager, formatter, platform);
+        const projectPath = resolveProjectPath(params.projectPath);
+        const result = await handleRunSuite({ ...params, projectPath }, sessionManager, formatter, platform);
         return successResponse(result);
       } catch (err) {
         return handleError(err);
@@ -202,7 +239,7 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_status',
     {
-      projectPath: z.string().describe('Project path'),
+      projectPath: z.string().describe('[lifecycle] Project path. Shows current container/network/session status.'),
     },
     async (params) => {
       try {
@@ -218,7 +255,7 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_logs',
     {
-      projectPath: z.string().describe('Project path'),
+      projectPath: z.string().describe('[lifecycle] Project path. Streams recent container log lines — useful for debugging setup failures.'),
       container: z.string().describe('Container name'),
       lines: z.number().optional().describe('Number of tail lines (default: 100)'),
       since: z.string().optional().describe('Show logs since timestamp, e.g. "5m", "2h"'),
@@ -237,12 +274,13 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_clean',
     {
-      projectPath: z.string().describe('Project path'),
+      projectPath: z.string().optional().describe('[lifecycle] Project path. STEP 5 of 5: stops containers, removes network, and destroys session. Optional when ARGUS_PROJECT_PATH is set.'),
       force: z.boolean().optional().describe('Force remove stuck containers'),
     },
     async (params) => {
       try {
-        const result = await handleClean(params, sessionManager);
+        const projectPath = resolveProjectPath(params.projectPath);
+        const result = await handleClean({ ...params, projectPath }, sessionManager);
         return successResponse(result);
       } catch (err) {
         return handleError(err);
@@ -250,11 +288,15 @@ export function createServer(options?: CreateServerOptions): {
     },
   );
 
+  // =====================================================================
+  // [mock] Mock server tools
+  // =====================================================================
+
   // Tool 9: argus_mock_requests
   server.tool(
     'argus_mock_requests',
     {
-      projectPath: z.string().describe('Project path'),
+      projectPath: z.string().describe('[mock] Project path. Lists captured HTTP requests received by mock servers — use to verify service integration.'),
       mockName: z.string().optional().describe('Specific mock name (default: all mocks)'),
       since: z.string().optional().describe('Filter requests after timestamp'),
       clear: z.boolean().optional().describe('Clear request log after reading'),
@@ -269,11 +311,15 @@ export function createServer(options?: CreateServerOptions): {
     },
   );
 
+  // =====================================================================
+  // [diagnostic] Environment health & resilience tools
+  // =====================================================================
+
   // Tool 10: argus_preflight_check
   server.tool(
     'argus_preflight_check',
     {
-      projectPath: z.string().describe('Project path (must have active session)'),
+      projectPath: z.string().describe('[diagnostic] Project path. Checks Docker daemon, disk space, and orphaned resources before setup.'),
       skipDiskCheck: z.boolean().optional().describe('Skip disk space check'),
       skipOrphanCheck: z.boolean().optional().describe('Skip orphaned resource check'),
       autoFix: z.boolean().optional().describe('Auto-clean orphaned resources'),
@@ -292,7 +338,7 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_reset_circuit',
     {
-      projectPath: z.string().describe('Project path (must have active session)'),
+      projectPath: z.string().describe('[diagnostic] Project path. Resets the circuit-breaker after consecutive Docker errors — call when setup is blocked by a tripped breaker.'),
     },
     async (params) => {
       try {
@@ -304,11 +350,15 @@ export function createServer(options?: CreateServerOptions): {
     },
   );
 
+  // =====================================================================
+  // [history] Historical run data — requires history.enabled in e2e.yaml
+  // =====================================================================
+
   // Tool 12: argus_history
   server.tool(
     'argus_history',
     {
-      projectPath: z.string().describe('Project path (must have active session)'),
+      projectPath: z.string().describe('[history] Project path. Returns paginated list of past test runs with pass/fail counts.'),
       limit: z.number().optional().default(20).describe('Max number of runs to return (1-100)'),
       status: z.enum(['passed', 'failed']).optional().describe('Filter by run status'),
       days: z.number().optional().describe('Filter to runs within the last N days'),
@@ -328,7 +378,7 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_trends',
     {
-      projectPath: z.string().describe('Project path'),
+      projectPath: z.string().describe('[history] Project path. Computes pass-rate / duration / flaky trend over time for charts or summaries.'),
       metric: z.enum(['pass-rate', 'duration', 'flaky']).describe('Metric to trend'),
       days: z.number().optional().default(14).describe('Number of days to analyze (1-90)'),
       suiteId: z.string().optional().describe('Filter to a specific suite'),
@@ -347,7 +397,7 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_flaky',
     {
-      projectPath: z.string().describe('Project path'),
+      projectPath: z.string().describe('[history] Project path. Ranks test cases by flakiness score — highest scores indicate non-deterministic tests that need attention.'),
       topN: z.number().optional().default(10).describe('Number of flaky cases to return (1-50)'),
       minScore: z.number().optional().default(0.01).describe('Minimum flaky score threshold (0-1)'),
       suiteId: z.string().optional().describe('Filter to a specific suite'),
@@ -366,7 +416,7 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_compare',
     {
-      projectPath: z.string().describe('Project path'),
+      projectPath: z.string().describe('[history] Project path. Diffs two run IDs to show regressions and fixes between them.'),
       baseRunId: z.string().describe('ID of the base (earlier) run'),
       compareRunId: z.string().describe('ID of the comparison (later) run'),
     },
@@ -380,11 +430,15 @@ export function createServer(options?: CreateServerOptions): {
     },
   );
 
+  // =====================================================================
+  // [knowledge] AI-assisted failure diagnosis and fix feedback
+  // =====================================================================
+
   // Tool 16: argus_diagnose (knowledge base: classify + match + suggest)
   server.tool(
     'argus_diagnose',
     {
-      projectPath: z.string().describe('Project path (must have active session with history enabled)'),
+      projectPath: z.string().describe('[knowledge] Project path. Classifies a failure, matches known patterns, and returns ranked fix suggestions — call immediately after a test run fails.'),
       runId: z.string().describe('ID of the test run containing the failed case'),
       caseName: z.string().describe('Name of the failed test case to diagnose'),
     },
@@ -402,7 +456,7 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_report_fix',
     {
-      projectPath: z.string().describe('Project path (must have active session with history enabled)'),
+      projectPath: z.string().describe('[knowledge] Project path. Records whether a fix resolved a failure, increasing pattern confidence scores for future diagnoses.'),
       runId: z.string().describe('ID of the test run where the failure was originally diagnosed'),
       caseName: z.string().describe('Name of the test case that was fixed'),
       fixDescription: z.string().describe('Description of what was changed to fix the failure'),
@@ -422,7 +476,7 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_patterns',
     {
-      projectPath: z.string().describe('Project path (must have active session with history enabled)'),
+      projectPath: z.string().describe('[knowledge] Project path. Lists built-in and learned failure patterns — use to understand what kinds of failures argus_diagnose can recognize.'),
       category: z.enum([
         'ASSERTION_MISMATCH', 'HTTP_ERROR', 'TIMEOUT', 'CONNECTION_REFUSED',
         'CONTAINER_OOM', 'CONTAINER_CRASH', 'MOCK_MISMATCH', 'CONFIG_ERROR',
@@ -442,11 +496,15 @@ export function createServer(options?: CreateServerOptions): {
     },
   );
 
+  // =====================================================================
+  // [mock] Mock generation tools (OpenAPI → YAML mock config)
+  // =====================================================================
+
   // Tool 19: argus_mock_generate
   server.tool(
     'argus_mock_generate',
     {
-      projectPath: z.string().describe('Absolute path to project directory containing e2e.yaml'),
+      projectPath: z.string().describe('[mock] Absolute path to project directory. Generates an e2e.yaml mock block from an OpenAPI spec — run once to bootstrap mock config.'),
       specPath: z.string().describe('Path to OpenAPI 3.x spec file (YAML or JSON). Absolute or relative to projectPath.'),
       mockName: z.string().optional().describe('Name for the generated mock service. Default: derived from spec title.'),
       port: z.number().optional().describe('Port number for the mock server. Default: 9090.'),
@@ -468,7 +526,7 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_mock_validate',
     {
-      projectPath: z.string().describe('Absolute path to project directory containing e2e.yaml'),
+      projectPath: z.string().describe('[mock] Absolute path to project directory. Validates that mock routes match the referenced OpenAPI spec and flags missing or mismatched routes.'),
       mockName: z.string().optional().describe('Name of the mock service to validate. If omitted, validates all mocks with openapi field.'),
       specPath: z.string().optional().describe('Override: path to OpenAPI spec file. If omitted, uses the openapi field from mock config.'),
     },
@@ -481,6 +539,10 @@ export function createServer(options?: CreateServerOptions): {
       }
     },
   );
+
+  // =====================================================================
+  // [diagnostic] Global resource inspection (no session required)
+  // =====================================================================
 
   // Tool 21: argus_resources (multi-project isolation — list all managed Docker resources)
   server.tool(
@@ -496,11 +558,15 @@ export function createServer(options?: CreateServerOptions): {
     },
   );
 
+  // =====================================================================
+  // [lifecycle] Compound convenience tools
+  // =====================================================================
+
   // Tool 22: argus_rebuild (convenience: clean → init → build → setup)
   server.tool(
     'argus_rebuild',
     {
-      projectPath: z.string().describe('Absolute path to project directory containing e2e.yaml'),
+      projectPath: z.string().describe('[lifecycle] Absolute path to project directory. Shortcut that chains argus_clean → argus_init → argus_build → argus_setup in one call.'),
       noCache: z.boolean().optional().describe('Disable Docker layer cache for rebuild'),
       configFile: z.string().optional().describe('Config filename override (default: e2e.yaml)'),
     },
@@ -518,7 +584,7 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_dev',
     {
-      projectPath: z.string().describe('Absolute path to project directory containing e2e.yaml'),
+      projectPath: z.string().describe('[lifecycle] Absolute path to project directory. Full one-step startup: init → build → setup — best for first-time project onboarding.'),
       configFile: z.string().optional().describe('Config filename override (default: e2e.yaml)'),
       noCache: z.boolean().optional().describe('Disable Docker layer cache for build'),
       skipBuild: z.boolean().optional().describe('Skip Docker build (reuse existing image)'),

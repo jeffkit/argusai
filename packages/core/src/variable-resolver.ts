@@ -1,8 +1,37 @@
 /**
  * @module variable-resolver
- * Template variable resolution for preflight.
+ * Template variable resolution for YAML test files.
  * Supports {{env.XXX}}, {{config.xxx}}, {{timestamp}}, {{uuid}}, {{date}},
  * and runtime variables in template strings and nested objects.
+ *
+ * ## Variable namespaces
+ *
+ * | Syntax            | Source                                    | Example                      |
+ * |-------------------|-------------------------------------------|------------------------------|
+ * | `{{env.NAME}}`    | `process.env.NAME`                        | `{{env.API_KEY}}`            |
+ * | `{{config.key}}`  | `service.vars` / `services[n].vars`       | `{{config.base_url}}`        |
+ * | `{{runtime.key}}` | values saved with `save:` in prior steps  | `{{runtime.login_token}}`    |
+ * | `{{timestamp}}`   | `Date.now()`                              | `{{timestamp}}`              |
+ * | `{{uuid}}`        | `crypto.randomUUID()`                     | `{{uuid}}`                   |
+ * | `{{date}}`        | today as `YYYY-MM-DD`                     | `{{date}}`                   |
+ *
+ * ### Important: `{{config.*}}` semantics (F10 note)
+ *
+ * Despite the name "config", `{{config.xxx}}` resolves from **service.vars** —
+ * not from global config fields like `project.name` or `history.enabled`.
+ * The key space maps directly to the `vars:` block under the active service:
+ *
+ * ```yaml
+ * service:
+ *   vars:
+ *     base_url: "http://localhost:3000"   # → {{config.base_url}}
+ *     auth_token: "secret"               # → {{config.auth_token}}
+ * ```
+ *
+ * In multi-service projects, `{{config.*}}` resolves from the **target suite's
+ * service** (controlled by `tests.suites[n].service`). All services' vars are
+ * merged if no specific service is targeted — later entries overwrite earlier
+ * ones when keys collide, so use unique key names across services.
  */
 
 import crypto from 'node:crypto';

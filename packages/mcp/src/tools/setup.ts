@@ -4,8 +4,25 @@
  *
  * Uses MultiServiceOrchestrator for config normalization and dependency
  * ordering, while keeping Docker calls at this level for testability.
+ *
+ * ## Runtime abstraction note (F08)
+ *
+ * `packages/core/src/runtime.ts` defines a `ContainerRuntime` interface
+ * (DockerRuntime / KubernetesRuntime) meant to be the unified abstraction
+ * entry point for all container operations. However, this module currently
+ * imports `docker-engine.ts` functions directly, bypassing that interface.
+ *
+ * Consequence: switching to KubernetesRuntime requires changes here, not just
+ * in the runtime layer. A future refactor should:
+ *   1. Accept a `ContainerRuntime` instance injected via `createServer()`.
+ *   2. Replace all direct docker-engine calls with `runtime.*` method calls.
+ *
+ * Until then, only DockerRuntime is effective in the MCP execution path.
  */
 
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
+import path from 'node:path';
 import {
   ensureNetwork,
   startContainer,
@@ -28,6 +45,8 @@ import {
   type NetworkVerificationReport,
 } from 'argusai-core';
 import { SessionManager, SessionError } from '../session.js';
+
+const execFileAsync = promisify(execFileCb);
 
 export interface SetupResult {
   network: { name: string; created: boolean };
@@ -175,30 +194,37 @@ export async function handleSetup(
         // In-process Fastify mocks (routes-only) are started on the host.
         if (mc.image) {
           const image = mc.image;
-          const args: string[] = (mc.args ?? '').split(/\s+/).filter(Boolean);
+          const extraArgs: string[] = (mc.args ?? '').split(/\s+/).filter(Boolean);
           const volumes: string[] = mc.volumes ?? [];
           const containerName = name;
           // Remove stale container with same name if present
           try {
-            const { execSync } = await import('child_process');
-            const running = execSync(
-              `docker ps -a --filter name=^/${containerName}$ --format "{{.Names}}"`,
-              { encoding: 'utf-8' },
-            ).trim();
-            if (running.includes(containerName)) {
-              execSync(`docker rm -f ${containerName}`, { stdio: 'pipe' });
+            // Use execFile with args array to avoid shell injection
+            const { stdout: psOut } = await execFileAsync('docker', [
+              'ps', '-a',
+              '--filter', `name=^/${containerName}$`,
+              '--format', '{{.Names}}',
+            ]);
+            if (psOut.trim().includes(containerName)) {
+              await execFileAsync('docker', ['rm', '-f', containerName]);
             }
             // Resolve relative volume paths against the project path
-            const { resolve: pathResolve } = await import('path');
             const resolvedVolumes = volumes.map((v: string) => {
               const [hostPath, containerPath] = v.split(':');
-              const absHost = hostPath!.startsWith('.') ? pathResolve(session.projectPath, hostPath!) : hostPath!;
+              const absHost = hostPath!.startsWith('.') ? path.resolve(session.projectPath, hostPath!) : hostPath!;
               return containerPath ? `${absHost}:${containerPath}` : absHost;
             });
-            const volFlags = resolvedVolumes.map((v: string) => `-v "${v}"`).join(' ');
-            const argStr = args.join(' ');
-            const cmd = `docker run -d --name ${containerName} --network ${session.networkName} -p ${mc.port}:${mc.port} ${volFlags} ${image} ${argStr}`.trim();
-            execSync(cmd, { stdio: 'pipe' });
+            // Build docker run args as an array — no shell interpretation
+            const dockerRunArgs = [
+              'run', '-d',
+              '--name', containerName,
+              '--network', session.networkName,
+              '-p', `${mc.port}:${mc.port}`,
+              ...resolvedVolumes.flatMap((v: string) => ['-v', v]),
+              image,
+              ...extraArgs,
+            ];
+            await execFileAsync('docker', dockerRunArgs);
             // Brief wait for the container to start
             await new Promise(resolve => setTimeout(resolve, 1000));
           } catch (dockerErr) {
@@ -207,8 +233,7 @@ export async function handleSetup(
           session.mockServers.set(name, {
             server: { close: async () => {
               try {
-                const { execSync } = await import('child_process');
-                execSync(`docker rm -f ${containerName}`, { stdio: 'pipe' });
+                await execFileAsync('docker', ['rm', '-f', containerName]);
               } catch { /* ignore */ }
             }},
             port: mc.port,
