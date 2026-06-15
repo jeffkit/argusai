@@ -83,7 +83,8 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
         run: |
-          PACKAGES=("core:argusai-core" "mcp:argusai-mcp" "cli:argusai-cli" "dashboard:argusai-dashboard")
+          # argusai-cli was removed in v0.14.0; use mcp2cli to run MCP tools as CLI.
+          PACKAGES=("core-storage:argusai-core-storage" "core:argusai-core" "mcp:argusai-mcp" "dashboard:argusai-dashboard")
           PUBLISHED=()
 
           for entry in "${PACKAGES[@]}"; do
@@ -112,7 +113,7 @@ jobs:
       - name: Create git tags
         if: steps.check.outputs.has_changesets == 'false'
         run: |
-          PACKAGES=("core:argusai-core" "mcp:argusai-mcp" "cli:argusai-cli" "dashboard:argusai-dashboard")
+          PACKAGES=("core-storage:argusai-core-storage" "core:argusai-core" "mcp:argusai-mcp" "dashboard:argusai-dashboard")
           for entry in "${PACKAGES[@]}"; do
             DIR="${entry%%:*}"
             NAME="${entry##*:}"

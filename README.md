@@ -26,7 +26,7 @@ ArgusAI 是一个声明式的 E2E 测试框架，通过 YAML 配置文件描述�
 - **可视化 Dashboard** — 实时查看测试执行状态、容器日志、Mock 请求录制、趋势分析
 - **多项目隔离** — 进程级端口注册中心（`PortAllocator`）+ 项目命名空间网络（`argusai-<project>-network`），多项目并发运行互不干扰
 - **纯测试模式** — 无需定义任何 `service`，直接对外部容器（如 docker-compose 编排的服务）跑 YAML 测试套件
-- **完整 CLI** — 25 个命令覆盖测试全生命周期（构建、运行、诊断、趋势分析），适合终端和 AI Agent
+- **CLI via mcp2cli** — 通过 [mcp2cli](https://github.com/f/mcp2cli) 将 MCP 工具直接作为 CLI 命令使用，替代原生 CLI
 - **MCP Server** — AI 原生集成，让 Cursor/Claude 等编程助手直接运行 E2E 测试（23 个工具）。只读类工具（history/trends/flaky/compare/diagnose/patterns/report-fix）支持按配置懒加载会话，无需先 `argus_init`
 - **CI/CD 模板** — 提供 GitLab CI 和 GitHub Actions 开箱即用模板
 
@@ -43,17 +43,24 @@ ArgusAI 是一个声明式的 E2E 测试框架，通过 YAML 配置文件描述�
 ### 1. 安装
 
 ```bash
-# 全局安装 CLI
-npm install -g argusai
+# 安装 MCP Server（推荐方式，可与 Cursor / Claude / mcp2cli 配合使用）
+npm install -g argusai-mcp
 
 # 或作为开发依赖
-pnpm add -D argusai argusai-core
+pnpm add -D argusai-mcp argusai-core
 ```
 
-### 2. 初始化项目
+> **`argusai-cli` 已弃用**
+> 原生 CLI（`argusai-cli`）从 v0.14.0 起不再维护。请改用 [mcp2cli](https://github.com/f/mcp2cli) 将 MCP 工具作为 CLI 命令调用：
+> ```bash
+> npm install -g mcp2cli
+> mcp2cli argusai-mcp argus_init --projectPath /path/to/project
+> ```
+
+### 2. 初始化项目（通过 mcp2cli）
 
 ```bash
-argusai init
+mcp2cli argusai-mcp argus_init --projectPath $(pwd)
 ```
 
 自动生成：
@@ -743,7 +750,7 @@ argusai/
 │   │       ├── port-allocator.ts     # 进程级端口注册中心（多项目隔离）
 │   │       └── resource-limiter.ts   # 并发资源控制
 │   │
-│   ├── cli/              # CLI 工具（argusai-cli）
+│   ├── core-storage/     # 存储层（argusai-core-storage，history/knowledge/db/sync）
 │   ├── dashboard/        # 可视化面板（argusai-dashboard）
 │   ├── mcp/              # MCP Server（argusai-mcp）
 │   └── server/           # 团队结果聚合服务（argusai-server，Fastify）

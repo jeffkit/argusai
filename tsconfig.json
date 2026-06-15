@@ -3,7 +3,6 @@
   "references": [
     { "path": "packages/core-storage" },
     { "path": "packages/core" },
-    { "path": "packages/cli" },
     { "path": "packages/dashboard" },
     { "path": "packages/mcp" },
     { "path": "packages/server" }
