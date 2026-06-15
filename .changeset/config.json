@@ -3,7 +3,7 @@
   "changelog": "@changesets/cli/changelog",
   "commit": false,
   "fixed": [],
-  "linked": [["argusai-core", "argusai-mcp", "argusai-cli", "argusai-dashboard"]],
+  "linked": [["argusai-core", "argusai-core-storage", "argusai-mcp", "argusai-cli", "argusai-dashboard"]],
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
