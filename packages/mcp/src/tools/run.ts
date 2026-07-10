@@ -9,17 +9,24 @@ import {
   executeYAMLSuite,
   executeSuitesWithParallel,
   createDefaultRegistry,
+  isContainerRunning,
+  MultiServiceOrchestrator,
   type TestEvent,
   type TestSuiteConfig,
   type SuiteExecutionConfig,
   type AIFriendlyTestResult,
+  type MockServiceConfig,
 } from 'argusai-core';
 import { SessionManager, SessionError } from '../session.js';
+import type { ProjectSession } from '../session.js';
 import type { ResultFormatter } from '../formatters/result-formatter.js';
 import type { PlatformServices } from '../server.js';
+import { handleSetup } from './setup.js';
 
 export interface RunResult {
   status: 'passed' | 'failed';
+  /** CI-friendly exit code: 0 = all passed, 1 = one or more failures */
+  exitCode: 0 | 1;
   totals: { passed: number; failed: number; skipped: number; total: number };
   duration: number;
   suites: Array<{
@@ -48,7 +55,7 @@ export interface RunResult {
  * @param sessionManager - Session store for tracking project state
  * @param formatter - Converts raw TestEvents into AIFriendlyTestResult format
  * @returns Structured run result with per-suite/per-case outcomes and diagnostics
- * @throws {SessionError} NOT_RUNNING if setup not done, SUITE_NOT_FOUND if filter matches nothing
+ * @throws {SessionError} SUITE_NOT_FOUND if filter matches nothing
  */
 export async function handleRun(
   params: { projectPath: string; filter?: string; parallel?: boolean; maxFailures?: number },
@@ -57,18 +64,17 @@ export async function handleRun(
   platform?: PlatformServices,
 ): Promise<RunResult> {
   const session = sessionManager.getOrThrow(params.projectPath);
-
-  if (session.state !== 'running' && !session.isTestOnly) {
-    throw new SessionError('NOT_RUNNING', 'Environment not set up. Call argus_setup first.');
-  }
+  const autoWarnings = await ensureEnvironmentReady(session, sessionManager);
 
   const config = session.config;
   if (!config.tests?.suites || config.tests.suites.length === 0) {
     return {
       status: 'passed',
+      exitCode: 0,
       totals: { passed: 0, failed: 0, skipped: 0, total: 0 },
       duration: 0,
       suites: [],
+      ...(autoWarnings.length > 0 ? { warnings: autoWarnings } : {}),
     };
   }
 
@@ -82,7 +88,11 @@ export async function handleRun(
     }
   }
 
-  return executeSuites(suites, session, formatter, sessionManager.eventBus, platform, params.parallel, params.maxFailures ?? 20);
+  const result = await executeSuites(suites, session, formatter, sessionManager.eventBus, platform, params.parallel, params.maxFailures ?? 20);
+  if (autoWarnings.length > 0) {
+    result.warnings = [...autoWarnings, ...(result.warnings ?? [])];
+  }
+  return result;
 }
 
 /**
@@ -93,7 +103,7 @@ export async function handleRun(
  * @param sessionManager - Session store for tracking project state
  * @param formatter - Converts raw TestEvents into AIFriendlyTestResult format
  * @returns Structured run result for the single suite
- * @throws {SessionError} NOT_RUNNING if setup not done, SUITE_NOT_FOUND if suiteId not found
+ * @throws {SessionError} SUITE_NOT_FOUND if suiteId not found
  */
 export async function handleRunSuite(
   params: { projectPath: string; suiteId: string; maxFailures?: number },
@@ -102,10 +112,7 @@ export async function handleRunSuite(
   platform?: PlatformServices,
 ): Promise<RunResult> {
   const session = sessionManager.getOrThrow(params.projectPath);
-
-  if (session.state !== 'running' && !session.isTestOnly) {
-    throw new SessionError('NOT_RUNNING', 'Environment not set up. Call argus_setup first.');
-  }
+  const autoWarnings = await ensureEnvironmentReady(session, sessionManager);
 
   const config = session.config;
   const suites = (config.tests?.suites ?? []).filter(
@@ -116,7 +123,56 @@ export async function handleRunSuite(
     throw new SessionError('SUITE_NOT_FOUND', `Suite "${params.suiteId}" not found in configuration`);
   }
 
-  return executeSuites(suites, session, formatter, sessionManager.eventBus, platform, undefined, params.maxFailures ?? 20);
+  const result = await executeSuites(suites, session, formatter, sessionManager.eventBus, platform, undefined, params.maxFailures ?? 20);
+  if (autoWarnings.length > 0) {
+    result.warnings = [...autoWarnings, ...(result.warnings ?? [])];
+  }
+  return result;
+}
+
+/**
+ * Ensure service (and image-based mock) containers are running before tests.
+ *
+ * Matches mock auto-start UX (issue #5): if the session is not `running`, or
+ * any required container is missing/stopped, invoke `argus_setup` once instead
+ * of letting every case fail with "No such container".
+ */
+export async function ensureEnvironmentReady(
+  session: ProjectSession,
+  sessionManager: SessionManager,
+): Promise<string[]> {
+  if (session.isTestOnly) return [];
+
+  const orchestrator = new MultiServiceOrchestrator();
+  const services = orchestrator.normalizeServices(session.config);
+  const mocks = (session.config.mocks ?? {}) as Record<string, MockServiceConfig>;
+  const hasInfrastructure = services.length > 0 || Object.keys(mocks).length > 0;
+  if (!hasInfrastructure) return [];
+
+  const missing: string[] = [];
+
+  for (const svc of services) {
+    if (!(await isContainerRunning(svc.container.name))) {
+      missing.push(svc.container.name);
+    }
+  }
+
+  for (const [name, mc] of Object.entries(mocks)) {
+    if (mc.image && !(await isContainerRunning(name))) {
+      missing.push(name);
+    }
+  }
+
+  const needsSetup = session.state !== 'running' || missing.length > 0;
+  if (!needsSetup) return [];
+
+  const reason = session.state !== 'running'
+    ? `Environment state is "${session.state}" (not running)`
+    : `Container(s) not running: ${missing.join(', ')}`;
+
+  await handleSetup({ projectPath: session.projectPath }, sessionManager);
+
+  return [`${reason} — auto-started via argus_setup.`];
 }
 
 async function executeSuites(
@@ -277,6 +333,7 @@ async function executeSuites(
   // History needs the full record; the AI-facing response gets a trimmed version.
   const rawResult: RunResult = {
     status: totalFailed > 0 ? 'failed' : 'passed',
+    exitCode: totalFailed > 0 ? 1 : 0,
     totals: { passed: totalPassed, failed: totalFailed, skipped: totalSkipped, total },
     duration: totalDuration,
     suites: suiteResults,

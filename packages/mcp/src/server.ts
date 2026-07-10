@@ -84,7 +84,8 @@ function successResponseWithState<T>(
   sessionManager: SessionManager,
   projectPath: string,
   warnings?: string[],
-): { content: Array<{ type: 'text'; text: string }> } {
+  options?: { isError?: boolean },
+): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } {
   const sessionState = sessionManager.has(projectPath)
     ? sessionManager.getOrThrow(projectPath).state
     : 'none';
@@ -95,7 +96,10 @@ function successResponseWithState<T>(
     ...(warnings && warnings.length > 0 ? { warnings } : {}),
     timestamp: Date.now(),
   };
-  return { content: [{ type: 'text' as const, text: JSON.stringify(envelope) }] };
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(envelope) }],
+    ...(options?.isError ? { isError: true } : {}),
+  };
 }
 
 /** Wrap an error in a structured JSON envelope with code and message. */
@@ -236,7 +240,7 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_run',
     {
-      projectPath: z.string().optional().describe('[lifecycle] Project path (must have running environment). STEP 4 of 5: executes all or filtered test suites. Optional when ARGUS_PROJECT_PATH is set.'),
+      projectPath: z.string().optional().describe('[lifecycle] Project path. STEP 4 of 5: executes all or filtered test suites. Auto-starts missing service/mock containers via setup when needed. Optional when ARGUS_PROJECT_PATH is set.'),
       filter: z.string().optional().describe('Suite ID filter (comma-separated for multiple)'),
       parallel: z.boolean().optional().describe('Override parallel execution setting'),
       maxFailures: z.number().optional().default(20).describe(
@@ -248,7 +252,15 @@ export function createServer(options?: CreateServerOptions): {
       try {
         const projectPath = resolveProjectPath(params.projectPath);
         const result = await handleRun({ ...params, projectPath }, sessionManager, formatter, platform);
-        return successResponseWithState(result, sessionManager, projectPath, result.warnings);
+        // Issue #6: mark tool result as error when tests failed so MCP clients /
+        // CI wrappers can treat non-green runs as failures (exitCode also in payload).
+        return successResponseWithState(
+          result,
+          sessionManager,
+          projectPath,
+          result.warnings,
+          { isError: result.status === 'failed' },
+        );
       } catch (err) {
         return handleError(err);
       }
@@ -267,7 +279,13 @@ export function createServer(options?: CreateServerOptions): {
       try {
         const projectPath = resolveProjectPath(params.projectPath);
         const result = await handleRunSuite({ ...params, projectPath }, sessionManager, formatter, platform);
-        return successResponseWithState(result, sessionManager, projectPath, result.warnings);
+        return successResponseWithState(
+          result,
+          sessionManager,
+          projectPath,
+          result.warnings,
+          { isError: result.status === 'failed' },
+        );
       } catch (err) {
         return handleError(err);
       }

@@ -1,6 +1,6 @@
 # YAML 测试用例配置参考
 
-> 最后更新：2026-02-26
+> 最后更新：2026-07-10
 
 本文档详细说明 preflight 的 YAML 测试用例配置语法、所有断言工具和使用示例。
 
@@ -500,7 +500,9 @@ expect:
       contains: "Server started"
       notContains: "FATAL"
       matches: "\\d{4}-\\d{2}-\\d{2}"
-      length: ">10"
+      length: ">10"          # 字符串比较
+      # length: 1            # 精确行数
+      # length: { gte: 1 }   # 对象比较
 ```
 
 #### output 字段
@@ -511,7 +513,7 @@ expect:
 | `notContains` | string / string[] | 输出不包含指定字符串 |
 | `matches` | string | 正则匹配输出 |
 | `json` | map | 将输出解析为 JSON，使用 body 断言引擎验证 |
-| `length` | string | 输出行数断言（如 `">10"`, `"==5"`, `">=1"`) |
+| `length` | number / string / object | 输出行数断言。支持 `1`（精确）、`">10"` / `"==5"`、`{ gt: 0 }` / `{ gte: 1, lte: 10 }` / `{ eq: 1 }` / `{ n: 1 }` |
 
 **Exec 输出解析为 JSON 的示例：**
 
@@ -1215,9 +1217,11 @@ teardown:
 | `Nh` | `"1h"` | 1 小时 |
 | `N` | `"5000"` | 5000 毫秒 |
 
-## 附录 B：比较运算符（用于 count / size / length 字符串）
+## 附录 B：比较运算符（用于 count / size / length）
 
-以下运算符可用于 `process.count`、`file.size`、`expect.output.length`：
+以下形式可用于 `process.count`、`file.size`、`expect.output.length`：
+
+**字符串运算符：**
 
 | 运算符 | 示例 | 含义 |
 |--------|------|------|
@@ -1227,6 +1231,13 @@ teardown:
 | `<=` | `"<=50"` | 小于等于 |
 | `==` | `"==1"` | 等于 |
 | `!=` | `"!=0"` | 不等于 |
+
+**`expect.output.length` 额外支持：**
+
+| 形式 | 示例 | 含义 |
+|------|------|------|
+| number | `length: 1` | 精确行数 |
+| object | `length: { gt: 0 }` | `gt` / `gte` / `lt` / `lte` / `eq` / `n` |
 
 ## 附录 C：步骤通用字段
 

@@ -573,8 +573,8 @@ ArgusAI 提供 MCP Server，让 AI 编程助手（如 Cursor、Claude Desktop）
 | `argus_init` | 初始化项目（加载 e2e.yaml） |
 | `argus_build` | 构建 Docker 镜像（含熔断器保护） |
 | `argus_setup` | 启动测试环境（含预检、端口解析、孤儿清理、网络验证） |
-| `argus_run` | 运行所有/指定测试套件 |
-| `argus_run_suite` | 运行单个测试套件 |
+| `argus_run` | 运行所有/指定测试套件（缺失容器时自动 setup；失败时 `isError=true` 且 `data.exitCode=1`） |
+| `argus_run_suite` | 运行单个测试套件（同上） |
 | `argus_status` | 查看环境状态 |
 | `argus_logs` | 查看容器日志 |
 | `argus_clean` | 清理资源 |

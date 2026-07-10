@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { loadYAMLTests, parseTime, executeYAMLSuite } from '../../src/yaml-engine.js';
+import { loadYAMLTests, parseTime, executeYAMLSuite, evaluateLineCount } from '../../src/yaml-engine.js';
 import type { TestEvent } from '../../src/types.js';
 
 /** Helper to create a temporary directory */
@@ -753,6 +753,43 @@ describe('yaml-engine', () => {
         expect(failEvent.attempts).toHaveLength(2);
       }
       expect(events.filter(e => e.type === 'case_skip')).toHaveLength(1);
+    });
+  });
+
+  describe('evaluateLineCount (issue #7)', () => {
+    it('supports exact number', () => {
+      expect(evaluateLineCount(1, 1)).toEqual([]);
+      expect(evaluateLineCount(2, 1)).toEqual([
+        'Output line count: expected 1, got 2',
+      ]);
+    });
+
+    it('supports bare numeric string', () => {
+      expect(evaluateLineCount(1, '1')).toEqual([]);
+      expect(evaluateLineCount(0, '1')[0]).toContain('expected 1');
+    });
+
+    it('supports comparison strings', () => {
+      expect(evaluateLineCount(3, '>0')).toEqual([]);
+      expect(evaluateLineCount(0, '>0')[0]).toContain('expected >0');
+      expect(evaluateLineCount(5, '==5')).toEqual([]);
+      expect(evaluateLineCount(4, '>=5')[0]).toContain('expected >=5');
+      expect(evaluateLineCount(1, '!=0')).toEqual([]);
+    });
+
+    it('supports object operators gt/gte/lt/lte/eq/n', () => {
+      expect(evaluateLineCount(2, { gt: 0 })).toEqual([]);
+      expect(evaluateLineCount(0, { gt: 0 })[0]).toContain('{ gt: 0 }');
+      expect(evaluateLineCount(1, { gte: 1, lte: 3 })).toEqual([]);
+      expect(evaluateLineCount(5, { gte: 1, lte: 3 })[0]).toContain('{ lte: 3 }');
+      expect(evaluateLineCount(1, { eq: 1 })).toEqual([]);
+      expect(evaluateLineCount(1, { n: 1 })).toEqual([]);
+      expect(evaluateLineCount(2, { n: 1 })[0]).toContain('{ n: 1 }');
+    });
+
+    it('rejects invalid forms without throwing', () => {
+      expect(evaluateLineCount(1, 'nope')[0]).toContain('Invalid');
+      expect(evaluateLineCount(1, {})[0]).toContain('Invalid');
     });
   });
 });

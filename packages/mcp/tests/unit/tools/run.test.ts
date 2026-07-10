@@ -18,11 +18,32 @@ vi.mock('argusai-core', async (importOriginal) => {
       cases: [],
     }),
     executeYAMLSuite: vi.fn(),
+    // run.ts uses executeSuitesWithParallel (which calls executeYAMLSuite internally
+    // in the real module). Mock it to delegate to the mocked executeYAMLSuite export.
+    executeSuitesWithParallel: vi.fn(async function* (
+      configs: Array<{ suite: { name: string }; options?: unknown }>,
+    ) {
+      const { executeYAMLSuite: mocked } = await import('argusai-core');
+      for (const c of configs) {
+        yield* (mocked as (s: unknown, o?: unknown) => AsyncGenerator<TestEvent>)(c.suite, c.options);
+      }
+    }),
     createDefaultRegistry: vi.fn(),
+    isContainerRunning: vi.fn().mockResolvedValue(true),
   };
 });
 
-const { executeYAMLSuite } = await import('argusai-core');
+vi.mock('../../../src/tools/setup.js', () => ({
+  handleSetup: vi.fn().mockResolvedValue({
+    network: { name: 'test-net', created: false },
+    services: [],
+    mocks: [],
+    totalDuration: 0,
+  }),
+}));
+
+const { executeYAMLSuite, isContainerRunning } = await import('argusai-core');
+const { handleSetup } = await import('../../../src/tools/setup.js');
 
 function createRunningSession(manager: SessionManager, projectPath = '/test/project'): void {
   const config: E2EConfig = {
@@ -62,6 +83,7 @@ describe('handleRun', () => {
     sessionManager = new SessionManager();
     formatter = new ResultFormatter();
     vi.clearAllMocks();
+    vi.mocked(isContainerRunning).mockResolvedValue(true);
   });
 
   it('should run all suites and return results', async () => {
@@ -79,7 +101,7 @@ describe('handleRun', () => {
     expect(result.suites.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('should throw NOT_RUNNING if environment is not set up', async () => {
+  it('should auto-setup when environment is not running (issue #5)', async () => {
     const config: E2EConfig = {
       version: '1',
       project: { name: 'test' },
@@ -87,12 +109,53 @@ describe('handleRun', () => {
         build: { dockerfile: 'Dockerfile', context: '.', image: 'test:latest' },
         container: { name: 'test-app', ports: ['3000:3000'] },
       },
+      tests: {
+        suites: [
+          { id: 'api', name: 'API Tests', file: 'tests/api.yaml', runner: 'yaml' },
+        ],
+      },
       network: { name: 'test-net' },
     };
     sessionManager.create('/test/project', config, '/path');
+    // initialized, not running — containers missing
+    vi.mocked(isContainerRunning).mockResolvedValue(false);
+    vi.mocked(executeYAMLSuite).mockImplementation(async function* () {
+      yield { type: 'suite_start', suite: 'API Tests', timestamp: Date.now() };
+      yield { type: 'case_pass', suite: 'API Tests', name: 'test 1', duration: 50, timestamp: Date.now() };
+      yield { type: 'suite_end', suite: 'API Tests', passed: 1, failed: 0, skipped: 0, duration: 50, timestamp: Date.now() };
+    } as any);
+    // After setup, session must be running for subsequent checks — simulate transition
+    vi.mocked(handleSetup).mockImplementation(async (params: { projectPath: string }) => {
+      sessionManager.transition(params.projectPath, 'built');
+      sessionManager.transition(params.projectPath, 'running');
+      vi.mocked(isContainerRunning).mockResolvedValue(true);
+      return {
+        network: { name: 'test-net', created: true },
+        services: [{ name: 'test', containerId: 'c1', status: 'healthy' as const, ports: [{ host: 3000, container: 3000 }] }],
+        mocks: [],
+        totalDuration: 10,
+      };
+    });
 
-    await expect(handleRun({ projectPath: '/test/project' }, sessionManager, formatter))
-      .rejects.toThrow(SessionError);
+    const result = await handleRun({ projectPath: '/test/project' }, sessionManager, formatter);
+
+    expect(handleSetup).toHaveBeenCalled();
+    expect(result.status).toBe('passed');
+    expect(result.exitCode).toBe(0);
+    expect(result.warnings?.some(w => w.includes('auto-started'))).toBe(true);
+  });
+
+  it('should return exitCode 1 when cases fail (issue #6)', async () => {
+    createRunningSession(sessionManager);
+    vi.mocked(isContainerRunning).mockResolvedValue(true);
+    vi.mocked(executeYAMLSuite).mockImplementation(async function* () {
+      yield* mockEvents();
+    } as any);
+
+    const result = await handleRun({ projectPath: '/test/project' }, sessionManager, formatter);
+
+    expect(result.status).toBe('failed');
+    expect(result.exitCode).toBe(1);
   });
 
   it('should allow test-only mode: run without services in initialized state (#4)', async () => {
@@ -159,6 +222,7 @@ describe('handleRunSuite', () => {
     sessionManager = new SessionManager();
     formatter = new ResultFormatter();
     vi.clearAllMocks();
+    vi.mocked(isContainerRunning).mockResolvedValue(true);
   });
 
   it('should run a single suite', async () => {

@@ -83,6 +83,7 @@ export {
   parseTime,
   executeYAMLSuite,
   executeSuitesWithParallel,
+  evaluateLineCount,
 } from './yaml-engine.js';
 export type { YAMLEngineOptions, SuiteExecutionConfig } from './yaml-engine.js';
 

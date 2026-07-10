@@ -940,6 +940,92 @@ function tryParseJSON(str: string): unknown {
 }
 
 /**
+ * Evaluate an output line-count assertion.
+ *
+ * Supported forms (issue #7):
+ * - `1` / `"1"` — exact equality
+ * - `">0"` / `"==5"` / `">=1"` / `"!="` — string operators
+ * - `{ gt, gte, lt, lte, eq, n }` — object operators (`eq` and `n` are aliases for exact)
+ *
+ * @returns Error messages (empty when assertion passes)
+ */
+export function evaluateLineCount(
+  actualLines: number,
+  expectation: number | string | Record<string, number>,
+): string[] {
+  const errors: string[] = [];
+
+  const fail = (expectedDesc: string) => {
+    errors.push(`Output line count: expected ${expectedDesc}, got ${actualLines}`);
+  };
+
+  if (typeof expectation === 'number') {
+    if (actualLines !== expectation) fail(String(expectation));
+    return errors;
+  }
+
+  if (typeof expectation === 'string') {
+    const trimmed = expectation.trim();
+    // Bare number string → exact match (YAML may coerce, but accept "1" too)
+    if (/^\d+$/.test(trimmed)) {
+      const expected = parseInt(trimmed, 10);
+      if (actualLines !== expected) fail(trimmed);
+      return errors;
+    }
+    const match = trimmed.match(/^([><=!]+)(\d+)$/);
+    if (!match) {
+      errors.push(`Invalid output.length assertion: ${JSON.stringify(expectation)}`);
+      return errors;
+    }
+    const op = match[1]!;
+    const expected = parseInt(match[2]!, 10);
+    let pass = false;
+    switch (op) {
+      case '>': pass = actualLines > expected; break;
+      case '<': pass = actualLines < expected; break;
+      case '>=': pass = actualLines >= expected; break;
+      case '<=': pass = actualLines <= expected; break;
+      case '=':
+      case '==': pass = actualLines === expected; break;
+      case '!=': pass = actualLines !== expected; break;
+      default:
+        errors.push(`Invalid output.length operator: ${op}`);
+        return errors;
+    }
+    if (!pass) fail(trimmed);
+    return errors;
+  }
+
+  if (expectation !== null && typeof expectation === 'object' && !Array.isArray(expectation)) {
+    const ops = expectation as Record<string, number>;
+    const checks: Array<[string, boolean, string]> = [];
+    if (ops.gt !== undefined) checks.push(['gt', actualLines > ops.gt, `{ gt: ${ops.gt} }`]);
+    if (ops.gte !== undefined) checks.push(['gte', actualLines >= ops.gte, `{ gte: ${ops.gte} }`]);
+    if (ops.lt !== undefined) checks.push(['lt', actualLines < ops.lt, `{ lt: ${ops.lt} }`]);
+    if (ops.lte !== undefined) checks.push(['lte', actualLines <= ops.lte, `{ lte: ${ops.lte} }`]);
+    if (ops.eq !== undefined) checks.push(['eq', actualLines === ops.eq, `{ eq: ${ops.eq} }`]);
+    if (ops.n !== undefined) checks.push(['n', actualLines === ops.n, `{ n: ${ops.n} }`]);
+
+    if (checks.length === 0) {
+      errors.push(`Invalid output.length assertion: ${JSON.stringify(expectation)}`);
+      return errors;
+    }
+    for (const [, pass, desc] of checks) {
+      if (!pass) fail(desc);
+    }
+    return errors;
+  }
+
+  errors.push(`Invalid output.length assertion: ${JSON.stringify(expectation)}`);
+  return errors;
+}
+
+// =====================================================================
+// Exec Step Execution
+// =====================================================================
+
+
+/**
  * Execute a Docker exec step: run a command inside the container and validate output.
  *
  * @returns Array of error messages (empty if all assertions pass)
@@ -1028,27 +1114,15 @@ async function executeExecStep(step: TestStep, containerName?: string): Promise<
       }
     }
 
-    // length (line count)
-    if (outExpect.length) {
-      const lines = output ? output.split('\n').length : 0;
-      const lengthCheck = outExpect.length;
-      const match = lengthCheck.match(/^([><=!]+)(\d+)$/);
-      if (match) {
-        const op = match[1];
-        const expected = parseInt(match[2], 10);
-        let pass = false;
-        switch (op) {
-          case '>': pass = lines > expected; break;
-          case '<': pass = lines < expected; break;
-          case '>=': pass = lines >= expected; break;
-          case '<=': pass = lines <= expected; break;
-          case '=': case '==': pass = lines === expected; break;
-          case '!=': pass = lines !== expected; break;
-        }
-        if (!pass) {
-          errors.push(`Output line count: expected ${lengthCheck}, got ${lines}`);
-        }
-      }
+    // length (line count) — supports number / string / { gt,gte,lt,lte,eq,n }
+    if (outExpect.length !== undefined && outExpect.length !== null && outExpect.length !== '') {
+      // Trailing newline from commands like `echo` should not inflate the count:
+      // "hello\n" → 1 line; "" → 0; "a\nb" → 2; "a\nb\n" → 2.
+      const lines = output.length === 0
+        ? 0
+        : output.replace(/\n$/, '').split('\n').length;
+      const lengthErrors = evaluateLineCount(lines, outExpect.length);
+      errors.push(...lengthErrors);
     }
   }
 

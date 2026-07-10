@@ -581,8 +581,20 @@ export interface TestStep {
       matches?: string;
       /** 将输出解析为 JSON 并断言 */
       json?: Record<string, unknown>;
-      /** 输出行数断言 e.g. ">0" */
-      length?: string;
+      /**
+       * 输出行数断言。支持：
+       * - number: `1`（精确行数）
+       * - string: `">0"` / `"==5"` / `">=1"`
+       * - object: `{ gt/gte/lt/lte/eq/n: number }`
+       */
+      length?: number | string | {
+        gt?: number;
+        gte?: number;
+        lt?: number;
+        lte?: number;
+        eq?: number;
+        n?: number;
+      };
     };
     /** exec 步骤的退出码断言 */
     exitCode?: number;
