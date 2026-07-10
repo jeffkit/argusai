@@ -32,7 +32,7 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",
