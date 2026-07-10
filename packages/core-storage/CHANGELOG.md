@@ -1,5 +1,13 @@
 # argusai-core-storage
 
+## 0.14.1
+
+### Patch Changes
+
+- bca4ec3: Version bump to keep linked packages in sync with argusai-core@0.14.1 (issues #5/#6/#7 release).
+
+
+
 ## 0.14.0
 
 ### Minor Changes
