@@ -1,5 +1,11 @@
 # argusai-core-storage
 
+## 0.14.2
+
+### Patch Changes
+
+- 442e362: Version bump to keep linked packages in sync with argusai-core@0.14.2 (issue #8 release).
+
 ## 0.14.1
 
 ### Patch Changes

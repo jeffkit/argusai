@@ -1,5 +1,18 @@
 # argusai-mcp
 
+## 0.14.2
+
+### Patch Changes
+
+- 442e362: fix(run): attribute suite events by id to prevent silent false-green (issue #8)
+
+  - Stamp `suiteId` from e2e.yaml onto all YAML suite/case events
+  - Aggregate `argus_run` results by `suiteId` instead of free-text `name`
+  - Guard: if a suite declares cases but none are attributed, mark failed (never empty pass)
+
+- Updated dependencies [442e362]
+  - argusai-core@0.14.2
+
 ## 0.14.1
 
 ### Patch Changes

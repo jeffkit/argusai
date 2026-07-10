@@ -1,5 +1,12 @@
 # argusai-dashboard
 
+## 0.14.2
+
+### Patch Changes
+
+- Updated dependencies [442e362]
+  - argusai-core@0.14.2
+
 ## 0.14.1
 
 ### Patch Changes
