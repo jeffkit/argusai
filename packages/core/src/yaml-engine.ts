@@ -49,6 +49,12 @@ export interface YAMLEngineOptions {
   browserHeadless?: boolean;
   /** Externally provided browser session (for reuse across suites) */
   browserSession?: BrowserSession;
+  /**
+   * Stable suite identity from e2e.yaml `id` (issue #8).
+   * When set, all suite/case events include `suiteId` so aggregators can
+   * attribute results by id instead of the free-text display `name`.
+   */
+  suiteId?: string;
 }
 
 // =====================================================================
@@ -175,11 +181,14 @@ export async function* executeYAMLSuite(
 ): AsyncGenerator<TestEvent> {
   const suiteStart = Date.now();
   const suiteName = suite.name;
+  // Stable id from e2e.yaml — stamped onto every suite/case event (issue #8).
+  const suiteId = options.suiteId;
+  const sid = suiteId ? { suiteId } : {};
   let passed = 0;
   let failed = 0;
   let skipped = 0;
 
-  yield { type: 'suite_start', suite: suiteName, timestamp: Date.now() };
+  yield { type: 'suite_start', suite: suiteName, ...sid, timestamp: Date.now() };
 
   // Merge suite-level variables into the context
   const ctx = options.variables;
@@ -275,6 +284,7 @@ export async function* executeYAMLSuite(
       yield {
         type: 'case_skip',
         suite: suiteName,
+        ...sid,
         name: testCase.name,
         reason: 'Previous case failed in sequential suite (fail-fast)',
         timestamp: Date.now(),
@@ -285,7 +295,7 @@ export async function* executeYAMLSuite(
     const caseStart = Date.now();
     const caseName = testCase.name;
 
-    yield { type: 'case_start', suite: suiteName, name: caseName, timestamp: Date.now() };
+    yield { type: 'case_start', suite: suiteName, ...sid, name: caseName, timestamp: Date.now() };
 
     // Resolve effective retry policy: case > suite > global
     const effectiveRetry = resolveRetryPolicy(
@@ -327,6 +337,7 @@ export async function* executeYAMLSuite(
         yield {
           type: 'case_pass',
           suite: suiteName,
+          ...sid,
           name: caseName,
           duration: Date.now() - caseStart,
           timestamp: Date.now(),
@@ -338,6 +349,7 @@ export async function* executeYAMLSuite(
           yield {
             type: 'case_pass',
             suite: suiteName,
+            ...sid,
             name: `${caseName} (error ignored)`,
             duration: Date.now() - caseStart,
             timestamp: Date.now(),
@@ -349,6 +361,7 @@ export async function* executeYAMLSuite(
           yield {
             type: 'case_fail',
             suite: suiteName,
+            ...sid,
             name: caseName,
             error: result.finalError ?? 'All retry attempts exhausted',
             duration: Date.now() - caseStart,
@@ -369,6 +382,7 @@ export async function* executeYAMLSuite(
         yield {
           type: 'case_pass',
           suite: suiteName,
+          ...sid,
           name: caseName,
           duration: Date.now() - caseStart,
           timestamp: Date.now(),
@@ -379,6 +393,7 @@ export async function* executeYAMLSuite(
           yield {
             type: 'case_pass',
             suite: suiteName,
+            ...sid,
             name: `${caseName} (error ignored)`,
             duration: Date.now() - caseStart,
             timestamp: Date.now(),
@@ -389,6 +404,7 @@ export async function* executeYAMLSuite(
           yield {
             type: 'case_fail',
             suite: suiteName,
+            ...sid,
             name: caseName,
             error: (err as Error).message,
             duration: Date.now() - caseStart,
@@ -425,6 +441,7 @@ export async function* executeYAMLSuite(
   yield {
     type: 'suite_end',
     suite: suiteName,
+    ...sid,
     passed,
     failed,
     skipped,

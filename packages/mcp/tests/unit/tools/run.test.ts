@@ -66,13 +66,14 @@ function createRunningSession(manager: SessionManager, projectPath = '/test/proj
   manager.transition(projectPath, 'running');
 }
 
-function* mockEvents(): Generator<TestEvent> {
-  yield { type: 'suite_start', suite: 'API Tests', timestamp: Date.now() };
-  yield { type: 'case_start', suite: 'API Tests', name: 'test 1', timestamp: Date.now() };
-  yield { type: 'case_pass', suite: 'API Tests', name: 'test 1', duration: 100, timestamp: Date.now() };
-  yield { type: 'case_start', suite: 'API Tests', name: 'test 2', timestamp: Date.now() };
-  yield { type: 'case_fail', suite: 'API Tests', name: 'test 2', error: 'Expected 200 got 500', duration: 200, timestamp: Date.now() };
-  yield { type: 'suite_end', suite: 'API Tests', passed: 1, failed: 1, skipped: 0, duration: 300, timestamp: Date.now() };
+function* mockEvents(suiteName = 'API Tests', suiteId?: string): Generator<TestEvent> {
+  const sid = suiteId ? { suiteId } : {};
+  yield { type: 'suite_start', suite: suiteName, ...sid, timestamp: Date.now() };
+  yield { type: 'case_start', suite: suiteName, ...sid, name: 'test 1', timestamp: Date.now() };
+  yield { type: 'case_pass', suite: suiteName, ...sid, name: 'test 1', duration: 100, timestamp: Date.now() };
+  yield { type: 'case_start', suite: suiteName, ...sid, name: 'test 2', timestamp: Date.now() };
+  yield { type: 'case_fail', suite: suiteName, ...sid, name: 'test 2', error: 'Expected 200 got 500', duration: 200, timestamp: Date.now() };
+  yield { type: 'suite_end', suite: suiteName, ...sid, passed: 1, failed: 1, skipped: 0, duration: 300, timestamp: Date.now() };
 }
 
 describe('handleRun', () => {
@@ -89,8 +90,8 @@ describe('handleRun', () => {
   it('should run all suites and return results', async () => {
     createRunningSession(sessionManager);
 
-    vi.mocked(executeYAMLSuite).mockImplementation(async function* () {
-      yield* mockEvents();
+    vi.mocked(executeYAMLSuite).mockImplementation(async function* (_suite: unknown, options?: { suiteId?: string }) {
+      yield* mockEvents('API Tests', options?.suiteId);
     } as any);
 
     const result = await handleRun({ projectPath: '/test/project' }, sessionManager, formatter);
@@ -99,6 +100,52 @@ describe('handleRun', () => {
     expect(result.totals.passed).toBeGreaterThanOrEqual(1);
     expect(result.totals.failed).toBeGreaterThanOrEqual(1);
     expect(result.suites.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('should attribute cases by suite id when e2e name ≠ yaml name (issue #8)', async () => {
+    const config: E2EConfig = {
+      version: '1',
+      project: { name: 'test' },
+      service: {
+        build: { dockerfile: 'Dockerfile', context: '.', image: 'test:latest' },
+        container: { name: 'test-app', ports: ['3000:3000'] },
+      },
+      tests: {
+        suites: [
+          // e2e.yaml display name "A" — deliberately different from yaml file name "B"
+          { id: 'my-suite', name: 'A', file: 'tests/my-suite.yaml', runner: 'yaml' },
+        ],
+      },
+      network: { name: 'test-net' },
+    };
+    sessionManager.create('/test/mismatch', config, '/test/mismatch/e2e.yaml');
+    sessionManager.transition('/test/mismatch', 'built');
+    sessionManager.transition('/test/mismatch', 'running');
+
+    const { loadYAMLTests } = await import('argusai-core');
+    vi.mocked(loadYAMLTests).mockResolvedValue({
+      name: 'B', // yaml file name differs from e2e entry name "A"
+      cases: [{ name: 'must fail' } as any],
+    });
+
+    vi.mocked(executeYAMLSuite).mockImplementation(async function* (suite: { name: string }, options?: { suiteId?: string }) {
+      // Engine emits events with yaml file name, but stamps suiteId from options
+      yield* mockEvents(suite.name, options?.suiteId);
+    } as any);
+
+    const result = await handleRun(
+      { projectPath: '/test/mismatch', filter: 'my-suite' },
+      sessionManager,
+      formatter,
+    );
+
+    // Must NOT be a silent false-green with total:0
+    expect(result.status).toBe('failed');
+    expect(result.exitCode).toBe(1);
+    expect(result.totals.total).toBeGreaterThan(0);
+    expect(result.totals.failed).toBeGreaterThanOrEqual(1);
+    expect(result.suites[0]!.id).toBe('my-suite');
+    expect(result.suites[0]!.cases.length).toBeGreaterThan(0);
   });
 
   it('should auto-setup when environment is not running (issue #5)', async () => {
@@ -148,8 +195,8 @@ describe('handleRun', () => {
   it('should return exitCode 1 when cases fail (issue #6)', async () => {
     createRunningSession(sessionManager);
     vi.mocked(isContainerRunning).mockResolvedValue(true);
-    vi.mocked(executeYAMLSuite).mockImplementation(async function* () {
-      yield* mockEvents();
+    vi.mocked(executeYAMLSuite).mockImplementation(async function* (_suite: unknown, options?: { suiteId?: string }) {
+      yield* mockEvents('API Tests', options?.suiteId);
     } as any);
 
     const result = await handleRun({ projectPath: '/test/project' }, sessionManager, formatter);

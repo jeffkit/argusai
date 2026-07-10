@@ -746,17 +746,17 @@ export interface ParallelConfig {
 // ==================== 测试事件 ====================
 
 export type TestEvent =
-  | { type: 'suite_start'; suite: string; timestamp: number }
-  | { type: 'case_start'; suite: string; name: string; timestamp: number }
-  | { type: 'case_pass'; suite: string; name: string; duration: number; timestamp: number;
+  | { type: 'suite_start'; suite: string; suiteId?: string; timestamp: number }
+  | { type: 'case_start'; suite: string; suiteId?: string; name: string; timestamp: number }
+  | { type: 'case_pass'; suite: string; suiteId?: string; name: string; duration: number; timestamp: number;
       attempts?: AttemptResult[] }
-  | { type: 'case_fail'; suite: string; name: string; error: string; duration: number;
+  | { type: 'case_fail'; suite: string; suiteId?: string; name: string; error: string; duration: number;
       timestamp: number; diagnostics?: DiagnosticReport; attempts?: AttemptResult[];
       request?: { method: string; url: string; headers: Record<string, string>; body?: unknown };
       response?: { status: number; headers: Record<string, string>; body?: unknown };
       assertions?: AssertionResult[] }
-  | { type: 'case_skip'; suite: string; name: string; reason?: string; timestamp: number }
-  | { type: 'suite_end'; suite: string; passed: number; failed: number; skipped: number; duration: number; timestamp: number }
+  | { type: 'case_skip'; suite: string; suiteId?: string; name: string; reason?: string; timestamp: number }
+  | { type: 'suite_end'; suite: string; suiteId?: string; passed: number; failed: number; skipped: number; duration: number; timestamp: number }
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string; timestamp: number };
 
 // ==================== 断言 ====================

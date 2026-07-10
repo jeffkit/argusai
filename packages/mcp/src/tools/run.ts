@@ -222,6 +222,8 @@ async function executeSuites(
             env: { ...process.env } as Record<string, string>,
           },
           containerName: getContainerName(session.config, svcName),
+          // Issue #8: stamp stable e2e.yaml id onto events for attribution
+          suiteId: suiteConfig.id,
         },
         parallel: parallelOverride ?? (suiteConfig.parallel ?? false),
         suiteConfig,
@@ -238,8 +240,14 @@ async function executeSuites(
     // Aggregate results per suite.
     // M4 fix: derive duration from suite_start/suite_end events instead of
     // measuring after the fact (which yields ~0ms since execution is already done).
-    for (const { suiteConfig } of suiteConfigs) {
-      const suiteEvents = allEvents.filter(e => 'suite' in e && e.suite === suiteConfig.name);
+    // Issue #8: attribute by suiteId (stable), not free-text name.
+    for (const { suiteConfig, suite: yamlSuite } of suiteConfigs) {
+      const suiteEvents = allEvents.filter(e =>
+        'suiteId' in e && e.suiteId !== undefined
+          ? e.suiteId === suiteConfig.id
+          // Backward-compat fallback for events without suiteId
+          : 'suite' in e && (e.suite === suiteConfig.name || e.suite === yamlSuite.name),
+      );
       const startEv = suiteEvents.find(e => e.type === 'suite_start') as { timestamp: number } | undefined;
       const endEv   = suiteEvents.find(e => e.type === 'suite_end')   as { timestamp: number; duration?: number } | undefined;
       // Prefer the engine-reported duration; fall back to timestamp diff; then 0.
@@ -254,6 +262,32 @@ async function executeSuites(
         else if (c.status === 'failed') suiteFailed++;
         else suiteSkipped++;
       }
+
+      // Defense against silent false-green (issue #8): yaml declared cases but
+      // none were attributed — treat as failure, never report empty pass.
+      const declaredCases = yamlSuite.cases?.length ?? 0;
+      if (declaredCases > 0 && suitePassed + suiteFailed + suiteSkipped === 0) {
+        const msg =
+          `Suite "${suiteConfig.id}" declared ${declaredCases} case(s) but no case events were attributed. ` +
+          `This usually means e2e.yaml name ("${suiteConfig.name}") and yaml file name ("${yamlSuite.name}") diverged ` +
+          `under an older attribution path — marking as failed.`;
+        warnings.push(msg);
+        suiteFailed = 1;
+        cases.push({
+          name: '(suite attribution failure)',
+          suite: suiteConfig.name,
+          status: 'failed',
+          duration: 0,
+          timestamp: Date.now(),
+          failure: {
+            error: msg,
+            summary: msg,
+            assertions: [],
+            diagnostics: { containerLogs: [], containerHealth: [], mockRequests: [], collectedAt: Date.now() },
+          },
+        });
+      }
+
       totalPassed += suitePassed;
       totalFailed += suiteFailed;
       totalSkipped += suiteSkipped;
