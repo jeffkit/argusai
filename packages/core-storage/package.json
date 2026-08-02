@@ -1,6 +1,6 @@
 {
   "name": "argusai-core-storage",
-  "version": "0.14.2",
+  "version": "0.14.3",
   "type": "module",
   "description": "ArgusAI storage layer — SQLite/Drizzle history, knowledge base, and team sync for E2E test results",
   "license": "MIT",

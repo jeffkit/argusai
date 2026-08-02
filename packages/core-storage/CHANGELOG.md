@@ -1,5 +1,11 @@
 # argusai-core-storage
 
+## 0.14.3
+
+### Patch Changes
+
+- 2eb6b59: Version bump to keep linked packages in sync with argusai-core@0.14.3 (issue #9 release).
+
 ## 0.14.2
 
 ### Patch Changes
