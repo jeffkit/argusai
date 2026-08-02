@@ -24,7 +24,7 @@ ArgusAI 是一个声明式的 E2E 测试框架，通过 YAML 配置文件描述�
 - **通知系统** — 可插拔通知通道（Console / Webhook / 自定义），推送失败、构建错误等事件
 - **团队结果聚合** — `argusai-server` 集中汇聚多端测试结果，支持队列化同步（`auto` / 手动 / `disabled`）
 - **可视化 Dashboard** — 实时查看测试执行状态、容器日志、Mock 请求录制、趋势分析
-- **多项目隔离** — 进程级端口注册中心（`PortAllocator`）+ 项目命名空间网络（`argusai-<project>-network`），多项目并发运行互不干扰
+- **多项目隔离** — 命名空间贯穿所有 Docker 资源：网络（`argusai-<namespace>-network`）、容器名（`<namespace>-<name>`，原名保留为 `--network-alias` 供容器内 DNS 解析）、`ports: ["0:8080"]` 随机 host 端口；资源统一打 `argusai.*` label 供孤儿清理。多项目/多 worktree 并发运行互不干扰
 - **纯测试模式** — 无需定义任何 `service`，直接对外部容器（如 docker-compose 编排的服务）跑 YAML 测试套件
 - **CLI via mcp2cli** — 通过 [mcp2cli](https://github.com/f/mcp2cli) 将 MCP 工具直接作为 CLI 命令使用，替代原生 CLI
 - **MCP Server** — AI 原生集成，让 Cursor/Claude 等编程助手直接运行 E2E 测试（23 个工具）。只读类工具（history/trends/flaky/compare/diagnose/patterns/report-fix）支持按配置懒加载会话，无需先 `argus_init`

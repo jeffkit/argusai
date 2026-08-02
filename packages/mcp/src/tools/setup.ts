@@ -30,6 +30,7 @@ import {
   createMockServer,
   isPortInUse,
   parseTime,
+  getHostPort,
   MultiServiceOrchestrator,
   PreflightChecker,
   PortResolver,
@@ -44,7 +45,7 @@ import {
   type OrphanCleanupResult,
   type NetworkVerificationReport,
 } from 'argusai-core';
-import { SessionManager, SessionError } from '../session.js';
+import { SessionManager, SessionError, deriveNamespace, resolveContainerName } from '../session.js';
 
 const execFileAsync = promisify(execFileCb);
 
@@ -98,6 +99,19 @@ function extractContainerPort(ports: string[]): number | undefined {
   if (ports.length === 0) return undefined;
   const parts = ports[0]!.split(':');
   return parts.length >= 2 ? parseInt(parts[1]!, 10) : parseInt(parts[0]!, 10);
+}
+
+/**
+ * Docker labels applied to every resource created by this setup.
+ * Lets OrphanCleaner / argus_resources / argus_clean find and manage them.
+ */
+function buildArgusLabels(projectName: string, runId: string): Record<string, string> {
+  return {
+    'argusai.managed': 'true',
+    'argusai.project': projectName,
+    'argusai.run-id': runId,
+    'argusai.created-at': new Date().toISOString(),
+  };
 }
 
 /**
@@ -172,10 +186,12 @@ export async function handleSetup(
     ? orchestrator.topologicalSort(services)
     : [];
 
+  const argusLabels = buildArgusLabels(config.project.name, session.runId);
+
   // Create Docker network
   let networkCreated = false;
   try {
-    await ensureNetwork(session.networkName);
+    await ensureNetwork(session.networkName, argusLabels);
     networkCreated = true;
     bus?.emit('setup', { event: 'network_created', data: { type: 'network_created', name: session.networkName, timestamp: ts() } });
   } catch {
@@ -196,7 +212,9 @@ export async function handleSetup(
           const image = mc.image;
           const extraArgs: string[] = (mc.args ?? '').split(/\s+/).filter(Boolean);
           const volumes: string[] = mc.volumes ?? [];
-          const containerName = name;
+          // Namespace-prefix the container name so concurrent sessions never
+          // collide; the plain name stays resolvable via --network-alias.
+          const containerName = `${deriveNamespace(config)}-${name}`;
           // Remove stale container with same name if present
           try {
             // Use execFile with args array to avoid shell injection
@@ -219,8 +237,10 @@ export async function handleSetup(
               'run', '-d',
               '--name', containerName,
               '--network', session.networkName,
+              '--network-alias', name,
               '-p', `${mc.port}:${mc.port}`,
               ...resolvedVolumes.flatMap((v: string) => ['-v', v]),
+              ...Object.entries(argusLabels).flatMap(([k, v]) => ['--label', `${k}=${v}`]),
               image,
               ...extraArgs,
             ];
@@ -230,6 +250,7 @@ export async function handleSetup(
           } catch (dockerErr) {
             throw new Error(`Failed to start image-based mock "${name}": ${(dockerErr as Error).message}`);
           }
+          session.containerNames.set(name, containerName);
           session.mockServers.set(name, {
             server: { close: async () => {
               try {
@@ -277,24 +298,46 @@ export async function handleSetup(
   for (const svc of orderedServices) {
     try {
       bus?.emit('setup', { event: 'service_starting', data: { type: 'service_starting', name: svc.name, image: svc.build.image, timestamp: ts() } });
+      // Namespace-prefix the container name so concurrent sessions (e.g.
+      // per-worktree MCP servers) never collide on `--name`; the original
+      // name stays resolvable via --network-alias inside the network.
+      const yamlName = svc.container.name;
+      const actualName = `${deriveNamespace(config)}-${yamlName}`;
+
       const containerId = await startContainer({
-        name: svc.container.name,
+        name: actualName,
         image: svc.build.image,
         ports: svc.container.ports,
         environment: svc.container.environment,
         volumes: svc.container.volumes,
         network: session.networkName,
+        networkAlias: [yamlName],
+        labels: argusLabels,
         healthcheck: buildHealthcheckCmd(svc),
       });
 
-      session.containerIds.set(svc.container.name, containerId);
+      session.containerIds.set(yamlName, containerId);
+      session.containerNames.set(yamlName, actualName);
+
+      // Resolve effective host ports. `ports: ["0:8080"]` asks Docker to
+      // assign a free random host port; read it back so tests can target it.
+      const declaredPorts = parsePorts(svc.container.ports);
+      const effectivePorts: Array<{ host: number; container: number }> = [];
+      for (const pm of declaredPorts) {
+        let hostPort = pm.host;
+        if (hostPort === 0) {
+          hostPort = (await getHostPort(actualName, pm.container)) ?? 0;
+        }
+        effectivePorts.push({ host: hostPort, container: pm.container });
+      }
+      session.containerHostPorts.set(yamlName, effectivePorts);
 
       let status: 'running' | 'healthy' | 'unhealthy' = 'running';
       let healthCheckDuration: number | undefined;
 
       if (svc.container.healthcheck) {
         const hcStart = Date.now();
-        const isHealthy = await waitForHealthy(svc.container.name, healthTimeout);
+        const isHealthy = await waitForHealthy(actualName, healthTimeout);
         healthCheckDuration = Date.now() - hcStart;
         status = isHealthy ? 'healthy' : 'unhealthy';
         if (isHealthy) {
@@ -306,7 +349,7 @@ export async function handleSetup(
         name: svc.name,
         containerId,
         status,
-        ports: parsePorts(svc.container.ports),
+        ports: effectivePorts,
         healthCheckDuration,
       });
     } catch (err) {
@@ -335,7 +378,8 @@ export async function handleSetup(
     serviceResults.length > 0 &&
     mockResults.some(m => m.status === 'running')
   ) {
-    const firstContainer = orderedServices[0]?.container.name;
+    const firstSvc = orderedServices[0];
+    const firstContainer = firstSvc ? resolveContainerName(session, firstSvc.container.name) : undefined;
     if (firstContainer) {
       const mockTargets = mockResults
         .filter(m => m.status === 'running')

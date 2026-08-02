@@ -78,6 +78,12 @@ export interface DockerRunOptions {
   volumes?: string[];
   /** Docker network to attach to */
   network?: string;
+  /**
+   * Extra hostnames resolvable to this container inside the Docker network.
+   * Keeps the original (un-namespaced) container name resolvable via DNS when
+   * the `--name` is prefixed with a namespace for multi-project isolation.
+   */
+  networkAlias?: string[];
   /** Container healthcheck configuration */
   healthcheck?: {
     cmd: string;
@@ -132,6 +138,16 @@ export function buildRunArgs(options: DockerRunOptions): string[] {
 
   if (options.network) {
     args.push('--network', options.network);
+  }
+
+  if (options.networkAlias && options.networkAlias.length > 0) {
+    // `--network-alias` only makes sense with a network; guard against bare
+    // `docker run` usage where Docker would reject it.
+    if (options.network) {
+      for (const alias of options.networkAlias) {
+        args.push('--network-alias', alias);
+      }
+    }
   }
 
   for (const portMapping of options.ports) {
@@ -488,6 +504,24 @@ export async function findContainersByLabel(label: string): Promise<string[]> {
   );
   if (!result) return [];
   return result.split('\n').filter(n => n.trim().length > 0);
+}
+
+/**
+ * Read the actual host port published for a container port.
+ *
+ * Used when the host port is `0` in the YAML (`ports: ["0:8080"]`), letting
+ * Docker assign a free random host port so concurrent runs never collide.
+ *
+ * @param name - Container name
+ * @param containerPort - Container-internal port
+ * @returns The host port, or `null` if the port is not published
+ */
+export async function getHostPort(name: string, containerPort: number): Promise<number | null> {
+  const result = await safeExecFileAsync('docker', ['port', name, `${containerPort}/tcp`]);
+  if (!result) return null;
+  // Output looks like "0.0.0.0:49153" or "[::]:49153"
+  const match = result.split('\n')[0]!.match(/(\d+)\s*$/);
+  return match ? parseInt(match[1]!, 10) : null;
 }
 
 // =====================================================================

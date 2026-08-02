@@ -68,6 +68,7 @@ export {
   isPortInUse,
   isPortInUseSync,
   getContainerInfo,
+  getHostPort,
   streamContainerLogs,
   buildBuildArgs,
   buildRunArgs,

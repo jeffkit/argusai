@@ -60,14 +60,23 @@ export async function handleStatus(
   // Check containers
   const services: StatusResult['services'] = [];
   for (const [name, containerId] of session.containerIds) {
-    const containerStatus = await getContainerStatus(name);
+    const actualName = session.containerNames.get(name) ?? name;
+    const containerStatus = await getContainerStatus(actualName);
 
     const config = session.config;
     const svcConfig = config.services?.find(s => s.container.name === name)
       ?? (config.service?.container.name === name ? config.service : undefined);
 
     const portMappings: StatusResult['services'][number]['ports'] = [];
-    if (svcConfig) {
+    // Prefer the effective bindings recorded by argus_setup (post PortResolver
+    // reassignment / Docker random-port allocation); fall back to YAML values.
+    const effectivePorts = session.containerHostPorts.get(name);
+    if (effectivePorts) {
+      for (const pm of effectivePorts) {
+        const accessible = await isPortInUse(pm.host);
+        portMappings.push({ host: pm.host, container: pm.container, accessible });
+      }
+    } else if (svcConfig) {
       for (const portStr of svcConfig.container.ports) {
         const parts = portStr.split(':');
         const host = parseInt(parts[0]!, 10);

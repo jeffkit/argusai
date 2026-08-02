@@ -17,7 +17,7 @@ import {
   type AIFriendlyTestResult,
   type MockServiceConfig,
 } from 'argusai-core';
-import { SessionManager, SessionError } from '../session.js';
+import { SessionManager, SessionError, resolveContainerName, resolveHostPort } from '../session.js';
 import type { ProjectSession } from '../session.js';
 import type { ResultFormatter } from '../formatters/result-formatter.js';
 import type { PlatformServices } from '../server.js';
@@ -152,13 +152,13 @@ export async function ensureEnvironmentReady(
   const missing: string[] = [];
 
   for (const svc of services) {
-    if (!(await isContainerRunning(svc.container.name))) {
+    if (!(await isContainerRunning(resolveContainerName(session, svc.container.name)))) {
       missing.push(svc.container.name);
     }
   }
 
   for (const [name, mc] of Object.entries(mocks)) {
-    if (mc.image && !(await isContainerRunning(name))) {
+    if (mc.image && !(await isContainerRunning(resolveContainerName(session, name)))) {
       missing.push(name);
     }
   }
@@ -215,13 +215,13 @@ async function executeSuites(
       suiteConfigs.push({
         suite: yamlSuite,
         options: {
-          baseUrl: getBaseUrl(session.config, svcName),
+          baseUrl: getBaseUrl(session, svcName),
           variables: {
             config: getConfigVars(session.config, svcName),
             runtime: {},
             env: { ...process.env } as Record<string, string>,
           },
-          containerName: getContainerName(session.config, svcName),
+          containerName: getContainerName(session, svcName),
           // Issue #8: stamp stable e2e.yaml id onto events for attribution
           suiteId: suiteConfig.id,
         },
@@ -483,23 +483,30 @@ function resolveService(
 }
 
 function getContainerName(
-  config: import('argusai-core').E2EConfig,
+  session: import('../session.js').ProjectSession,
   serviceName?: string,
 ): string | undefined {
-  return resolveService(config, serviceName)?.container.name;
+  const yamlName = resolveService(session.config, serviceName)?.container.name;
+  return yamlName ? resolveContainerName(session, yamlName) : undefined;
 }
 
 function getBaseUrl(
-  config: import('argusai-core').E2EConfig,
+  session: import('../session.js').ProjectSession,
   serviceName?: string,
 ): string {
+  const config = session.config;
   const svc = resolveService(config, serviceName);
   if (!svc) return 'http://localhost:3000';
   if (svc.vars?.['base_url']) return svc.vars['base_url'];
 
   const ports = svc.container.ports;
   if (ports.length > 0) {
-    const hostPort = ports[0]!.split(':')[0];
+    const parts = ports[0]!.split(':');
+    const yamlHostPort = parseInt(parts[0]!, 10);
+    const containerPort = parseInt(parts[1] ?? parts[0]!, 10);
+    // Use the effective host port: PortResolver reassignment and/or Docker
+    // random-port allocation (`ports: ["0:8080"]`) may have moved it.
+    const hostPort = resolveHostPort(session, svc.container.name, containerPort) ?? yamlHostPort;
     return `http://localhost:${hostPort}`;
   }
   return 'http://localhost:3000';

@@ -83,6 +83,12 @@ export async function handleClean(
   for (const [name] of session.containerIds) {
     containerNames.add(name);
   }
+  // Namespace-prefixed actual container names (started by argus_setup).
+  // The label-based lookup below would find them too; add here for the
+  // case where label lookup fails (Docker unreachable).
+  for (const actualName of session.containerNames.values()) {
+    containerNames.add(actualName);
+  }
   try {
     const labeledContainers = await findContainersByLabel(
       `argusai.project=${session.config.project.name}`,

@@ -36,18 +36,21 @@ export async function handleLogs(
     throw new SessionError('CONTAINER_NOT_FOUND', `Container "${params.container}" not found in session`);
   }
 
-  const containerStatus = await getContainerStatus(params.container);
+  // Resolve the YAML-declared name to the actual namespace-prefixed name.
+  const container = session.containerNames.get(params.container) ?? params.container;
+
+  const containerStatus = await getContainerStatus(container);
 
   if (containerStatus !== 'running' && containerStatus !== 'exited') {
     throw new SessionError('CONTAINER_NOT_RUNNING', `Container "${params.container}" is not running (status: ${containerStatus})`);
   }
 
   const lineCount = params.lines ?? 100;
-  const rawLogs = await getContainerLogs(params.container, lineCount);
+  const rawLogs = await getContainerLogs(container, lineCount);
   const lines = rawLogs.split('\n').filter(Boolean);
 
   return {
-    container: params.container,
+    container,
     lines,
     lineCount: lines.length,
     containerStatus,

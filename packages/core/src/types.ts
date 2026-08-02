@@ -251,6 +251,10 @@ export interface IsolationConfig {
    * Custom namespace prefix for Docker resources (containers, networks).
    * Defaults to a slug derived from the project name.
    * Used to prevent resource name collisions when multiple projects run simultaneously.
+   *
+   * Container names are prefixed as `<namespace>-<name>`; the original name is
+   * registered as a `--network-alias` so DNS-based references between containers
+   * keep working unchanged.
    */
   namespace?: string;
   /**

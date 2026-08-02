@@ -40,6 +40,10 @@ export interface ProjectSession {
   config: E2EConfig;
   configPath: string;
   containerIds: Map<string, string>;
+  /** YAML container name → actual Docker container name (namespace-prefixed) */
+  containerNames: Map<string, string>;
+  /** YAML container name → effective host port bindings (after auto-assignment) */
+  containerHostPorts: Map<string, Array<{ host: number; container: number }>>;
   mockServers: Map<string, { server: { close(): Promise<void> }; port: number }>;
   networkName: string;
   createdAt: number;
@@ -115,6 +119,11 @@ export function deriveNetworkName(config: E2EConfig): string {
 /**
  * Derive the project namespace string (without -network suffix).
  * Used as a prefix for container names and Docker labels.
+ *
+ * Also surfaced via {@link resolveContainerName} — every container started by
+ * `argus_setup` gets the `<namespace>-<name>` prefix, so concurrent sessions
+ * (e.g. per-worktree MCP servers) never collide on Docker container names.
+ * The original name is kept as a `--network-alias` for in-network DNS.
  */
 export function deriveNamespace(config: E2EConfig): string {
   if (config.isolation?.namespace) {
@@ -124,6 +133,30 @@ export function deriveNamespace(config: E2EConfig): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Resolve the actual Docker container name for a YAML-declared container name.
+ * Falls back to the YAML name when the session has no record (e.g. container
+ * started outside argus_setup, or test-only sessions).
+ */
+export function resolveContainerName(session: ProjectSession, yamlName: string): string {
+  return session.containerNames.get(yamlName) ?? yamlName;
+}
+
+/**
+ * Resolve the effective host port for a container's published port.
+ *
+ * Returns the port actually bound on the host — after PortResolver
+ * reassignment and/or Docker random-port allocation (`ports: ["0:8080"]`).
+ * Returns `undefined` when the session has no record for this binding.
+ */
+export function resolveHostPort(
+  session: ProjectSession,
+  yamlName: string,
+  containerPort: number,
+): number | undefined {
+  return session.containerHostPorts.get(yamlName)?.find(b => b.container === containerPort)?.host;
 }
 /** Cleanup check interval: every 5 minutes */
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
@@ -380,6 +413,8 @@ export class SessionManager {
       config,
       configPath,
       containerIds: new Map(),
+      containerNames: new Map(),
+      containerHostPorts: new Map(),
       mockServers: new Map(),
       networkName,
       createdAt: now,

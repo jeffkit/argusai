@@ -7,6 +7,17 @@ import { SessionManager, SessionError } from '../../../src/session.js';
 import { handleSetup } from '../../../src/tools/setup.js';
 import type { E2EConfig } from 'argusai-core';
 
+// execFile is only used by the image-based mock path (stale check + docker run).
+vi.mock('node:child_process', () => ({
+  execFile: vi.fn((...args: unknown[]) => {
+    const cb = args.at(-1) as (err: Error | null, result: { stdout: string }) => void;
+    cb(null, { stdout: 'abcdef' });
+  }),
+}));
+
+import { execFile } from 'node:child_process';
+const mockExecFile = vi.mocked(execFile);
+
 vi.mock('argusai-core', async (importOriginal) => {
   const orig = await importOriginal() as Record<string, unknown>;
   return {
@@ -15,6 +26,7 @@ vi.mock('argusai-core', async (importOriginal) => {
     startContainer: vi.fn().mockResolvedValue('abc123def456'),
     waitForHealthy: vi.fn().mockResolvedValue(true),
     isPortInUse: vi.fn().mockResolvedValue(false),
+    getHostPort: vi.fn().mockResolvedValue(49153),
     createMockServer: vi.fn().mockReturnValue({
       listen: vi.fn().mockResolvedValue('http://0.0.0.0:9100'),
       close: vi.fn().mockResolvedValue(undefined),
@@ -26,7 +38,7 @@ vi.mock('argusai-core', async (importOriginal) => {
   };
 });
 
-const { startContainer, waitForHealthy, isPortInUse } = await import('argusai-core');
+const { startContainer, waitForHealthy, isPortInUse, ensureNetwork, getHostPort } = await import('argusai-core');
 
 function setupSession(manager: SessionManager, projectPath = '/test/project'): void {
   const config: E2EConfig = {
@@ -169,5 +181,113 @@ describe('handleSetup', () => {
         }),
       }),
     );
+  });
+
+  it('should namespace container names and add network-alias + labels (issue #9)', async () => {
+    // Previous tests may have left isPortInUse mocked as "in use".
+    vi.mocked(isPortInUse).mockResolvedValue(false);
+    setupSession(sessionManager);
+
+    await handleSetup({ projectPath: '/test/project' }, sessionManager);
+
+    expect(startContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'test-test-app',
+        networkAlias: ['test-app'],
+        labels: expect.objectContaining({
+          'argusai.managed': 'true',
+          'argusai.project': 'test',
+          'argusai.run-id': expect.any(String),
+        }),
+      }),
+    );
+    // Network is labelled so OrphanCleaner can find it.
+    expect(ensureNetwork).toHaveBeenCalledWith(
+      'test-net',
+      expect.objectContaining({ 'argusai.managed': 'true', 'argusai.project': 'test' }),
+    );
+    // Health check targets the actual (namespaced) container name.
+    expect(waitForHealthy).toHaveBeenCalledWith('test-test-app', expect.any(Number));
+    // Session records the YAML name → actual name mapping.
+    const session = sessionManager.getOrThrow('/test/project');
+    expect(session.containerNames.get('test-app')).toBe('test-test-app');
+  });
+
+  it('should use isolation.namespace as the container name prefix (issue #9)', async () => {
+    const manager = new SessionManager();
+    const config: E2EConfig = {
+      version: '1',
+      project: { name: 'recursive-agent' },
+      isolation: { namespace: 'wt-abc123' },
+      service: {
+        build: { dockerfile: 'Dockerfile', context: '.', image: 'recursive:e2e' },
+        container: { name: 'recursive-e2e', ports: ['8080:8080'] },
+      },
+      resilience: { preflight: { enabled: false }, circuitBreaker: { enabled: false } },
+    } as E2EConfig;
+    manager.create('/test/ns', config, '/test/ns/e2e.yaml');
+    manager.transition('/test/ns', 'built');
+
+    await handleSetup({ projectPath: '/test/ns' }, manager);
+
+    expect(startContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'wt-abc123-recursive-e2e',
+        networkAlias: ['recursive-e2e'],
+      }),
+    );
+  });
+
+  it('should read back Docker random host ports (ports: ["0:8080"]) and record them (issue #9)', async () => {
+    const manager = new SessionManager();
+    const config: E2EConfig = {
+      version: '1',
+      project: { name: 'test-rand-port' },
+      service: {
+        build: { dockerfile: 'Dockerfile', context: '.', image: 'test:latest' },
+        container: { name: 'app', ports: ['0:8080'] },
+      },
+      network: { name: 'test-net' },
+      resilience: { preflight: { enabled: false }, circuitBreaker: { enabled: false } },
+    } as E2EConfig;
+    manager.create('/test/rand', config, '/test/rand/e2e.yaml');
+    manager.transition('/test/rand', 'built');
+
+    const result = await handleSetup({ projectPath: '/test/rand' }, manager);
+
+    expect(getHostPort).toHaveBeenCalledWith('test-rand-port-app', 8080);
+    expect(result.services[0]!.ports).toEqual([{ host: 49153, container: 8080 }]);
+    const session = manager.getOrThrow('/test/rand');
+    expect(session.containerHostPorts.get('app')).toEqual([{ host: 49153, container: 8080 }]);
+  });
+
+  it('should namespace image-based mock containers with alias + labels (issue #9)', async () => {
+    const manager = new SessionManager();
+    const config: E2EConfig = {
+      version: '1',
+      project: { name: 'mock-proj' },
+      service: {
+        build: { dockerfile: 'Dockerfile', context: '.', image: 'svc:latest' },
+        container: { name: 'svc', ports: ['8080:8080'] },
+      },
+      mocks: { aimock: { image: 'aimock:latest', port: 4010 } },
+      network: { name: 'test-net' },
+      resilience: { preflight: { enabled: false }, circuitBreaker: { enabled: false } },
+    } as E2EConfig;
+    manager.create('/test/mockproj', config, '/test/mockproj/e2e.yaml');
+    manager.transition('/test/mockproj', 'built');
+
+    const result = await handleSetup({ projectPath: '/test/mockproj' }, manager);
+
+    const runCalls = mockExecFile.mock.calls.filter(c => (c[1] as string[])?.includes('run'));
+    const runArgs = runCalls[0]![1] as string[];
+    const nameIdx = runArgs.indexOf('--name');
+    expect(runArgs[nameIdx + 1]).toBe('mock-proj-aimock');
+    const aliasIdx = runArgs.indexOf('--network-alias');
+    expect(aliasIdx).toBeGreaterThan(-1);
+    expect(runArgs[aliasIdx + 1]).toBe('aimock');
+    expect(runArgs).toContain('argusai.managed=true');
+    expect(result.mocks[0]!.status).toBe('running');
+    expect(manager.getOrThrow('/test/mockproj').containerNames.get('aimock')).toBe('mock-proj-aimock');
   });
 });

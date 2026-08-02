@@ -118,6 +118,24 @@ describe('PortResolver', () => {
       expect(result.portMappings[0]!.reassigned).toBe(false);
     });
 
+    it('should pass through port 0 unchanged (Docker random host port)', async () => {
+      mockIsPortInUse.mockResolvedValue(false);
+
+      const services: ServiceDefinition[] = [{
+        name: 'api',
+        build: { dockerfile: 'Dockerfile', context: '.', image: 'api:latest' },
+        container: { name: 'api', ports: ['0:8080'] },
+      }];
+
+      const resolver = new PortResolver('auto');
+      const result = await resolver.resolveServicePorts(services, {});
+
+      expect(result.services[0]!.container.ports[0]).toBe('0:8080');
+      expect(result.portMappings[0]!.originalPort).toBe(0);
+      expect(result.portMappings[0]!.actualPort).toBe(0);
+      expect(result.portMappings[0]!.reassigned).toBe(false);
+    });
+
     it('should auto-reassign occupied service ports', async () => {
       mockIsPortInUse
         .mockResolvedValueOnce(true)   // 3000 is in use

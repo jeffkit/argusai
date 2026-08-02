@@ -17,6 +17,26 @@ import {
 } from '../../src/docker-engine.js';
 import { createServer } from 'node:net';
 
+// execFile is only used by getHostPort (via execFileAsync); keep spawn and
+// execFileSync real for the other tests in this file.
+vi.mock('node:child_process', async (importOriginal) => {
+  const orig = await importOriginal() as Record<string, unknown>;
+  return {
+    ...orig,
+    execFile: vi.fn((
+      _bin: string,
+      _args: string[],
+      _opts: unknown,
+      callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+    ) => {
+      callback?.(new Error('docker unavailable'), { stdout: '', stderr: '' });
+    }),
+  };
+});
+
+import { execFile } from 'node:child_process';
+const mockExecFile = vi.mocked(execFile);
+
 describe('docker-engine', () => {
   describe('buildBuildArgs', () => {
     it('should generate minimal build args', () => {
@@ -255,6 +275,103 @@ describe('docker-engine', () => {
 
       // Image is last
       expect(args[args.length - 1]).toBe('ordered-image:latest');
+    });
+
+    it('should emit --network-alias after --network when aliases are given', () => {
+      const options: DockerRunOptions = {
+        name: 'ns-recursive-e2e',
+        image: 'recursive:e2e',
+        ports: ['8080:8080'],
+        network: 'argusai-wt-aaa-network',
+        networkAlias: ['recursive-e2e'],
+      };
+
+      const args = buildRunArgs(options);
+
+      const networkIdx = args.indexOf('--network');
+      const aliasIdx = args.indexOf('--network-alias');
+      expect(networkIdx).toBeGreaterThan(-1);
+      expect(aliasIdx).toBeGreaterThan(networkIdx);
+      expect(args[aliasIdx + 1]).toBe('recursive-e2e');
+    });
+
+    it('should not emit --network-alias without a network', () => {
+      const options: DockerRunOptions = {
+        name: 'plain',
+        image: 'plain:latest',
+        ports: [],
+        networkAlias: ['alias-name'],
+      };
+
+      const args = buildRunArgs(options);
+
+      expect(args).not.toContain('--network-alias');
+    });
+
+    it('should emit --label for every label entry', () => {
+      const options: DockerRunOptions = {
+        name: 'labeled',
+        image: 'labeled:latest',
+        ports: [],
+        labels: {
+          'argusai.managed': 'true',
+          'argusai.project': 'demo',
+          'argusai.run-id': 'run-1',
+          'argusai.created-at': '2026-08-02T00:00:00.000Z',
+        },
+      };
+
+      const args = buildRunArgs(options);
+
+      expect(args).toContain('--label');
+      expect(args).toContain('argusai.managed=true');
+      expect(args).toContain('argusai.project=demo');
+      expect(args).toContain('argusai.run-id=run-1');
+      expect(args).toContain('argusai.created-at=2026-08-02T00:00:00.000Z');
+    });
+  });
+
+  describe('getHostPort', () => {
+    it('should parse IPv4 docker port output', async () => {
+      mockExecFile.mockImplementation(((
+        _bin: string,
+        _args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, result: { stdout: string }) => void,
+      ) => {
+        cb(null, { stdout: '0.0.0.0:49153\n' });
+      }) as never);
+
+      const { getHostPort } = await import('../../src/docker-engine.js');
+      expect(await getHostPort('ns-app', 8080)).toBe(49153);
+    });
+
+    it('should parse IPv6 docker port output', async () => {
+      mockExecFile.mockImplementation(((
+        _bin: string,
+        _args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, result: { stdout: string }) => void,
+      ) => {
+        cb(null, { stdout: '[::]:49154\n' });
+      }) as never);
+
+      const { getHostPort } = await import('../../src/docker-engine.js');
+      expect(await getHostPort('ns-app', 8080)).toBe(49154);
+    });
+
+    it('should return null when the port is not published', async () => {
+      mockExecFile.mockImplementation(((
+        _bin: string,
+        _args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, result: { stdout: string }) => void,
+      ) => {
+        cb(new Error('No such container'), { stdout: '' });
+      }) as never);
+
+      const { getHostPort } = await import('../../src/docker-engine.js');
+      expect(await getHostPort('ns-app', 8080)).toBeNull();
     });
   });
 
