@@ -168,6 +168,7 @@ export type { PortClaim, PortAllocatorOptions } from './port-allocator.js';
 export {
   DockerRuntime,
   KubernetesRuntime,
+  HostRuntime,
   createRuntime,
 } from './runtime.js';
 export type {

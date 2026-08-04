@@ -11,6 +11,8 @@
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createServer } from './server.js';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 export { createServer } from './server.js';
 export type { CreateServerOptions, PlatformServices } from './server.js';
@@ -96,8 +98,20 @@ async function main() {
   }
 }
 
-const isMainModule = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'));
-if (isMainModule || process.argv[1]?.endsWith('preflight-mcp')) {
+// Detect whether this module is the entry point. Must handle npm-linked
+// installs where process.argv[1] is a symlink path but import.meta.url
+// resolves to the realpath — compare via realpathSync, not raw endsWith.
+const isMainModule = (() => {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return import.meta.url.endsWith(argv1.replace(/\\/g, '/'))
+      || argv1.endsWith('preflight-mcp');
+  }
+})();
+if (isMainModule) {
   main().catch((err) => {
     console.error('Failed to start MCP server:', err);
     process.exit(1);
