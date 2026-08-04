@@ -543,7 +543,19 @@ async function executeStep(
     const pluginStep = findPluginStep(resolvedStep);
     if (pluginStep !== null) {
       const { key, value } = pluginStep;
-      const results = globalAssertionPluginRegistry.runAll(key, value, resolvedStep.expect ?? null);
+      // Plugins that read `stepBody.container` (e.g. recursive-session's
+      // docker cp) need the session-resolved container name (namespace-
+      // prefixed, e.g. `wt-XXX-recursive-e2e`), not the raw YAML name
+      // (`recursive-e2e`). Override it when a resolved containerName was
+      // injected via options — same fix as executeExecStep's priority swap.
+      let pluginValue = value;
+      if (containerName && typeof pluginValue === 'object' && pluginValue !== null) {
+        const body = pluginValue as Record<string, unknown>;
+        if (typeof body.container === 'string' && body.container !== containerName) {
+          pluginValue = { ...body, container: containerName };
+        }
+      }
+      const results = globalAssertionPluginRegistry.runAll(key, pluginValue, resolvedStep.expect ?? null);
       return results.filter(r => !r.passed).map(r => r.message);
     }
 
@@ -1067,7 +1079,7 @@ async function executeExecStep(
   runtime?: ContainerRuntime,
 ): Promise<string[]> {
   const execConfig = step.exec!;
-  const container = execConfig.container || containerName;
+  const container = containerName || execConfig.container;
 
   // Without a runtime AND without a container name, we can't execute.
   // With a HostRuntime, the container name is ignored (host has no containers),
@@ -1205,7 +1217,7 @@ async function executeFileStep(
   runtime?: ContainerRuntime,
 ): Promise<string[]> {
   const fileConfig = step.file!;
-  const container = fileConfig.container || containerName;
+  const container = containerName || fileConfig.container;
 
   if (!runtime && !container) {
     return [`File step "${step.name}" requires a container name`];
@@ -1377,7 +1389,7 @@ async function executeProcessStep(
   runtime?: ContainerRuntime,
 ): Promise<string[]> {
   const procConfig = step.process!;
-  const container = procConfig.container || containerName;
+  const container = containerName || procConfig.container;
 
   if (!runtime && !container) {
     return [`Process step "${step.name}" requires a container name`];
@@ -1476,7 +1488,7 @@ async function executePortStep(
   runtime?: ContainerRuntime,
 ): Promise<string[]> {
   const portConfig = step.port!;
-  const container = portConfig.container || containerName;
+  const container = containerName || portConfig.container;
   const errors: string[] = [];
 
   const execInTarget = async (cmd: string): Promise<{ stdout: string; exitCode: number }> => {
