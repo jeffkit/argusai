@@ -1,5 +1,19 @@
 # argusai-core
 
+## 0.15.2
+
+### Patch Changes
+
+- HostRuntime: map aimock:PORT → localhost:PORT + generic E2E_HOST_REPLACEMENTS
+
+  HostRuntime's execInContainer now also rewrites Docker network DNS names to
+  localhost: `aimock:4010` → `localhost:4010`. This lets YAML suites with
+  hardcoded `http://aimock:PORT` URLs run on the host unchanged.
+
+  Also adds a generic `E2E_HOST_REPLACEMENTS` env var for custom replacements
+  (space-separated `old=new` pairs) when additional Docker→host mappings are
+  needed.
+
 ## 0.15.1
 
 ### Patch Changes

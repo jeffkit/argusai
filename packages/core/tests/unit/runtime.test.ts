@@ -353,4 +353,10 @@ describe('HostRuntime', () => {
     const result = await runtime.execInContainer('ignored', 'echo /tmp/other-path');
     expect(result.stdout).toBe('/tmp/other-path');
   });
+
+  it('maps aimock:PORT → localhost:PORT (Docker DNS → host)', async () => {
+    const runtime = new HostRuntime();
+    const result = await runtime.execInContainer('ignored', 'echo http://aimock:4010/v1');
+    expect(result.stdout).toBe('http://localhost:4010/v1');
+  });
 });

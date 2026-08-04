@@ -370,14 +370,32 @@ export class HostRuntime implements ContainerRuntime {
   }
 
   /**
-   * Rewrite `/workspace` → `workspaceDir` in a command string.
-   * Only replaces the path token (`/workspace` followed by `/` or end-of-word),
-   * not substrings like `/workspace-foo`.
+   * Rewrite container-specific tokens to host equivalents in a command:
+   * 1. `/workspace` → `workspaceDir` (path mapping)
+   * 2. `aimock:PORT` → `localhost:PORT` (Docker DNS → host port)
+   * 3. Any `key=value` pair in `E2E_HOST_REPLACEMENTS` env (space-separated)
    */
   private mapPath(s: string): string {
-    if (!this.workspaceDir) return s;
-    // Replace /workspace followed by / or word-boundary or end-of-string
-    return s.replace(/\/workspace(?=[/\s'"]|$)/g, this.workspaceDir);
+    let result = s;
+    // 1. /workspace → workspaceDir
+    if (this.workspaceDir) {
+      result = result.replace(/\/workspace(?=[/\s'"]|$)/g, this.workspaceDir);
+    }
+    // 2. aimock:PORT → localhost:PORT (common Docker network DNS → host)
+    result = result.replace(/aimock:(\d+)/g, 'localhost:$1');
+    // 3. Generic replacements from env: "old1=new1 old2=new2"
+    const reps = process.env.E2E_HOST_REPLACEMENTS;
+    if (reps) {
+      for (const pair of reps.split(/\s+/)) {
+        const eq = pair.indexOf('=');
+        if (eq > 0) {
+          const old = pair.slice(0, eq);
+          const newVal = pair.slice(eq + 1);
+          result = result.split(old).join(newVal);
+        }
+      }
+    }
+    return result;
   }
 
   async *buildImage(_options: RuntimeBuildOptions): AsyncGenerator<BuildEvent> {
