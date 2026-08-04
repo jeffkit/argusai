@@ -281,7 +281,10 @@ export const E2EConfigSchema = z.object({
   isolation: IsolationConfigSchema.describe('Multi-project isolation — namespace, port range'),
   runtime: z.object({
     type: z.enum(['docker', 'kubernetes', 'host']).optional(),
-  }).optional().describe('Container runtime selection (default: docker). Set type:host to run test commands directly on the host without containers.'),
+    host: z.object({
+      workspaceDir: z.string().optional(),
+    }).optional(),
+  }).optional().describe('Container runtime selection (default: docker). Set type:host to run test commands directly on the host without containers. host.workspaceDir maps /workspace to a writable host directory.'),
   server: ServerConfigSchema.describe('Server sync configuration — omitting preserves local-only behavior'),
   plugins: z.array(z.string()).optional()
     .describe('Plugin module specifiers to load before running tests (relative paths, absolute paths, or npm package names)'),

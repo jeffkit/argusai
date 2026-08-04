@@ -237,7 +237,7 @@ export interface E2EConfig {
    * on host ports. This is useful for fast iteration without Docker image
    * builds.
    */
-  runtime?: { type?: 'docker' | 'kubernetes' | 'host' };
+  runtime?: { type?: 'docker' | 'kubernetes' | 'host'; host?: { workspaceDir?: string } };
   /** Server sync configuration (optional — omitting preserves local-only behavior) */
   server?: ServerConfig;
   /**

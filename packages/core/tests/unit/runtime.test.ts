@@ -334,4 +334,23 @@ describe('HostRuntime', () => {
     }
     expect(events).toHaveLength(0);
   });
+
+  it('workspaceDir maps /workspace in exec commands', async () => {
+    const tmpDir = await import('node:os').then(os => os.tmpdir());
+    const runtime = new HostRuntime(tmpDir + '/e2e-test-ws');
+    // The exec command uses /workspace; HostRuntime should map it to the
+    // configured workspaceDir before running. We test by echoing a path
+    // and checking it was rewritten (the dir won't actually exist, but
+    // echo doesn't care).
+    const result = await runtime.execInContainer('ignored', 'echo /workspace/smoke-01/file.txt');
+    // stdout should contain the mapped path, not /workspace
+    expect(result.stdout).not.toContain('/workspace/');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('workspaceDir does not touch non-workspace paths', async () => {
+    const runtime = new HostRuntime('/tmp/some-dir');
+    const result = await runtime.execInContainer('ignored', 'echo /tmp/other-path');
+    expect(result.stdout).toBe('/tmp/other-path');
+  });
 });

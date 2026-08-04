@@ -356,6 +356,29 @@ export class KubernetesRuntime implements ContainerRuntime {
  */
 export class HostRuntime implements ContainerRuntime {
   readonly name = 'host';
+  /**
+   * When set, `/workspace` in exec commands and file paths is transparently
+   * mapped to this directory. This lets the 33+ YAML suites that hardcode
+   * `/workspace/...` (a container path) run on the host unchanged.
+   * Set via `RuntimeConfig.host.workspaceDir` or the `E2E_WORKSPACE_DIR` env var.
+   */
+  private readonly workspaceDir: string | undefined;
+
+  constructor(workspaceDir?: string) {
+    // env override takes precedence (set by e2e-run-host.sh or CI)
+    this.workspaceDir = workspaceDir ?? process.env.E2E_WORKSPACE_DIR ?? undefined;
+  }
+
+  /**
+   * Rewrite `/workspace` → `workspaceDir` in a command string.
+   * Only replaces the path token (`/workspace` followed by `/` or end-of-word),
+   * not substrings like `/workspace-foo`.
+   */
+  private mapPath(s: string): string {
+    if (!this.workspaceDir) return s;
+    // Replace /workspace followed by / or word-boundary or end-of-string
+    return s.replace(/\/workspace(?=[/\s'"]|$)/g, this.workspaceDir);
+  }
 
   async *buildImage(_options: RuntimeBuildOptions): AsyncGenerator<BuildEvent> {
     // No image to build in host mode — the binary is compiled separately.
@@ -388,8 +411,10 @@ export class HostRuntime implements ContainerRuntime {
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');
     const exec = promisify(execFile);
+    // Map /workspace → workspaceDir so container-path commands work on host.
+    const mappedCommand = this.mapPath(command);
     try {
-      const { stdout } = await exec('sh', ['-c', command], {
+      const { stdout } = await exec('sh', ['-c', mappedCommand], {
         encoding: 'utf-8',
         timeout: 15_000,
         // Inherit the test process's environment so PATH-resolved binaries
@@ -426,9 +451,15 @@ export class HostRuntime implements ContainerRuntime {
 
 export type RuntimeType = 'docker' | 'kubernetes' | 'host';
 
+export interface HostRuntimeOptions {
+  /** Map /workspace → this dir in exec commands (enables container-path YAMLs on host). */
+  workspaceDir?: string;
+}
+
 export interface RuntimeConfig {
   type?: RuntimeType;
   kubernetes?: K8sRuntimeOptions;
+  host?: HostRuntimeOptions;
 }
 
 export function createRuntime(config?: RuntimeConfig): ContainerRuntime {
@@ -437,7 +468,7 @@ export function createRuntime(config?: RuntimeConfig): ContainerRuntime {
     return new KubernetesRuntime(config?.kubernetes);
   }
   if (type === 'host') {
-    return new HostRuntime();
+    return new HostRuntime(config?.host?.workspaceDir);
   }
   return new DockerRuntime();
 }

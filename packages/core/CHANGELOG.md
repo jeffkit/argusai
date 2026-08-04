@@ -1,5 +1,18 @@
 # argusai-core
 
+## 0.15.1
+
+### Patch Changes
+
+- HostRuntime: transparent /workspace path mapping
+
+  HostRuntime now accepts an optional workspaceDir (via config
+  `runtime.host.workspaceDir` or `E2E_WORKSPACE_DIR` env var). When set,
+  `/workspace` in exec commands is transparently rewritten to the
+  configured directory, so YAML suites that hardcode `/workspace/...`
+  (a container path) run on the host unchanged. This avoids editing 33+
+  YAML files for host-mode compatibility.
+
 ## 0.15.0
 
 ### Minor Changes
