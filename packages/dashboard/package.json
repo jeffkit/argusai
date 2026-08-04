@@ -1,6 +1,6 @@
 {
   "name": "argusai-dashboard",
-  "version": "0.14.3",
+  "version": "0.15.0",
   "type": "module",
   "description": "ArgusAI Dashboard — real-time web UI for monitoring AI-driven E2E test pipelines",
   "license": "MIT",
