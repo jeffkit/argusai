@@ -445,7 +445,20 @@ export class HostRuntime implements ContainerRuntime {
       env: { ...process.env },
     };
     if (this.workspaceDir) {
-      execOpts.cwd = this.workspaceDir;
+      try {
+        // Only set cwd if the workspace dir actually exists — `sh -c` fails
+        // to spawn with ENOENT on a non-existent cwd, which would break both
+        // real runs (the dir is created by e2e-run-host.sh's mktemp -d) and
+        // unit tests that pass a synthetic path purely to exercise path
+        // mapping. When the dir is absent we fall back to the parent cwd,
+        // matching the pre-cwd behavior.
+        const stat = await import('node:fs').then(fs => fs.promises.stat(this.workspaceDir!));
+        if (stat.isDirectory()) {
+          execOpts.cwd = this.workspaceDir;
+        }
+      } catch {
+        // workspaceDir doesn't exist (or isn't stat-able) — leave cwd unset.
+      }
     }
     try {
       const { stdout } = await exec('sh', ['-c', mappedCommand], execOpts);
