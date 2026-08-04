@@ -431,14 +431,24 @@ export class HostRuntime implements ContainerRuntime {
     const exec = promisify(execFile);
     // Map /workspace → workspaceDir so container-path commands work on host.
     const mappedCommand = this.mapPath(command);
+    // Mirror Docker's WORKDIR: when a workspaceDir is configured (the host
+    // equivalent of the container's `/workspace`), run the command with that
+    // as the cwd. Without this, a host-mode process inherits the daemon's cwd
+    // and commands that rely on relative paths (or on the binary's default
+    // workspace = cwd, e.g. `recursive http` with no --workspace) would
+    // resolve files outside the mapped workspace — diverging from Docker mode.
+    const execOpts: { encoding: 'utf-8'; timeout: number; env: NodeJS.ProcessEnv; cwd?: string } = {
+      encoding: 'utf-8',
+      timeout: 15_000,
+      // Inherit the test process's environment so PATH-resolved binaries
+      // (recursive, jq, find, …) are found.
+      env: { ...process.env },
+    };
+    if (this.workspaceDir) {
+      execOpts.cwd = this.workspaceDir;
+    }
     try {
-      const { stdout } = await exec('sh', ['-c', mappedCommand], {
-        encoding: 'utf-8',
-        timeout: 15_000,
-        // Inherit the test process's environment so PATH-resolved binaries
-        // (recursive, jq, find, …) are found.
-        env: { ...process.env },
-      });
+      const { stdout } = await exec('sh', ['-c', mappedCommand], execOpts);
       return { stdout: stdout.trim(), exitCode: 0 };
     } catch (err: unknown) {
       const execErr = err as { stdout?: string; stderr?: string; code?: number | string };
