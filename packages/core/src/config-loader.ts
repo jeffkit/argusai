@@ -444,12 +444,13 @@ function extractVars(raw: Record<string, unknown>): Record<string, string> {
  * work regardless of the process working directory.
  */
 function resolveBuildPathsInConfig(config: E2EConfig, configDir: string): void {
-  if (config.service) {
+  if (config.service?.build) {
     config.service.build.dockerfile = path.resolve(configDir, config.service.build.dockerfile);
     config.service.build.context = path.resolve(configDir, config.service.build.context);
   }
   if (config.services) {
     for (const svc of config.services) {
+      if (!svc.build) continue;
       svc.build.dockerfile = path.resolve(configDir, svc.build.dockerfile);
       svc.build.context = path.resolve(configDir, svc.build.context);
     }

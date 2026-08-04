@@ -35,7 +35,7 @@ function extractServices(config: E2EConfig): InitResult['services'] {
   if (config.services && config.services.length > 0) {
     return config.services.map((svc: ServiceDefinition) => ({
       name: svc.name,
-      image: svc.build.image,
+      image: svc.build?.image ?? 'host',
       ports: svc.container.ports,
       hasHealthcheck: !!svc.container.healthcheck,
     }));
@@ -45,7 +45,7 @@ function extractServices(config: E2EConfig): InitResult['services'] {
     const svc: ServiceConfig = config.service;
     return [{
       name: svc.container.name,
-      image: svc.build.image,
+      image: svc.build?.image ?? 'host',
       ports: svc.container.ports,
       hasHealthcheck: !!svc.container.healthcheck,
     }];

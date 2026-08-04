@@ -65,7 +65,7 @@ export interface ContainerRuntime {
   getContainerStatus(name: string): Promise<ContainerStatus>;
   isContainerRunning(name: string): Promise<boolean>;
   getContainerLogs(name: string, lines?: number): Promise<string>;
-  execInContainer(name: string, command: string): Promise<string>;
+  execInContainer(name: string, command: string): Promise<RuntimeExecResult>;
 
   ensureNetwork(name: string): Promise<void>;
   removeNetwork(name: string): Promise<void>;
@@ -115,7 +115,7 @@ export class DockerRuntime implements ContainerRuntime {
     return getContainerLogs(name, lines);
   }
 
-  async execInContainer(name: string, command: string): Promise<string> {
+  async execInContainer(name: string, command: string): Promise<RuntimeExecResult> {
     const { execInContainer } = await import('./docker-engine.js');
     return execInContainer(name, command);
   }
@@ -250,8 +250,14 @@ export class KubernetesRuntime implements ContainerRuntime {
     return this.kubectl(['logs', name, `--tail=${lines}`]).catch(() => '');
   }
 
-  async execInContainer(name: string, command: string): Promise<string> {
-    return this.kubectl(['exec', name, '--', 'sh', '-c', command]);
+  async execInContainer(name: string, command: string): Promise<RuntimeExecResult> {
+    try {
+      const stdout = await this.kubectl(['exec', name, '--', 'sh', '-c', command]);
+      return { stdout, exitCode: 0 };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { stdout: msg, exitCode: 1 };
+    }
   }
 
   async ensureNetwork(_name: string): Promise<void> {
@@ -330,10 +336,95 @@ export class KubernetesRuntime implements ContainerRuntime {
 }
 
 // =====================================================================
+// HostRuntime — run test commands directly on the host (no containers)
+// =====================================================================
+
+/**
+ * A runtime that executes test commands directly on the host machine, without
+ * any container layer. Used when `e2e.yaml` declares `runtime: { type: host }`.
+ *
+ * Design:
+ * - `execInContainer` ignores the `name` argument (there are no containers)
+ *   and runs the command via `sh -c` on the host. This lets all 41 YAML
+ *   suites (which carry `container: recursive-e2e`) work unchanged — the
+ *   container name is simply disregarded.
+ * - Container lifecycle methods (`buildImage`, `startContainer`, `ensureNetwork`,
+ *   `waitForHealthy`, …) are no-ops. The service under test is expected to
+ *   already be built (`cargo build`) and running (or invokable directly as a
+ *   CLI binary) on the host. Mock services are started by the plugin's
+ *   `setup()` hook (typically as a local `docker run -p` or in-process server).
+ */
+export class HostRuntime implements ContainerRuntime {
+  readonly name = 'host';
+
+  async *buildImage(_options: RuntimeBuildOptions): AsyncGenerator<BuildEvent> {
+    // No image to build in host mode — the binary is compiled separately.
+    // Yield nothing; the generator protocol completes immediately.
+  }
+
+  async startContainer(_options: RuntimeRunOptions): Promise<string> {
+    // No container to start. Return a sentinel name so callers that expect a
+    // container ID don't break. This value is never used to exec into.
+    return 'host';
+  }
+
+  async stopContainer(_name: string): Promise<void> {
+    // Nothing to stop.
+  }
+
+  async getContainerStatus(_name: string): Promise<ContainerStatus> {
+    return 'running';
+  }
+
+  async isContainerRunning(_name: string): Promise<boolean> {
+    return true;
+  }
+
+  async getContainerLogs(_name: string, _lines = 100): Promise<string> {
+    return '';
+  }
+
+  async execInContainer(_name: string, command: string): Promise<RuntimeExecResult> {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const exec = promisify(execFile);
+    try {
+      const { stdout } = await exec('sh', ['-c', command], {
+        encoding: 'utf-8',
+        timeout: 15_000,
+        // Inherit the test process's environment so PATH-resolved binaries
+        // (recursive, jq, find, …) are found.
+        env: { ...process.env },
+      });
+      return { stdout: stdout.trim(), exitCode: 0 };
+    } catch (err: unknown) {
+      const execErr = err as { stdout?: string; stderr?: string; code?: number | string };
+      const output = (execErr.stdout || execErr.stderr || '').trim();
+      const rawCode = execErr.code;
+      const exitCode = typeof rawCode === 'number' ? rawCode : 1;
+      return { stdout: output, exitCode };
+    }
+  }
+
+  async ensureNetwork(_name: string): Promise<void> {
+    // No Docker network needed in host mode.
+  }
+
+  async removeNetwork(_name: string): Promise<void> {
+    // No-op.
+  }
+
+  async waitForHealthy(_name: string, _timeoutMs = 120_000): Promise<boolean> {
+    // The host is always "healthy" from our perspective.
+    return true;
+  }
+}
+
+// =====================================================================
 // Factory
 // =====================================================================
 
-export type RuntimeType = 'docker' | 'kubernetes';
+export type RuntimeType = 'docker' | 'kubernetes' | 'host';
 
 export interface RuntimeConfig {
   type?: RuntimeType;
@@ -344,6 +435,9 @@ export function createRuntime(config?: RuntimeConfig): ContainerRuntime {
   const type = config?.type ?? 'docker';
   if (type === 'kubernetes') {
     return new KubernetesRuntime(config?.kubernetes);
+  }
+  if (type === 'host') {
+    return new HostRuntime();
   }
   return new DockerRuntime();
 }

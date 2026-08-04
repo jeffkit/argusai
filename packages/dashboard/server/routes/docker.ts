@@ -252,7 +252,7 @@ export const dockerRoutes: FastifyPluginAsync = async (_app) => {
   const getConfig = (): E2EConfig | null => getAppState().config;
   const getContainerName = () => getConfig()?.service?.container.name ?? 'e2e-service';
   const getNetworkName = () => getConfig()?.network?.name ?? 'e2e-network';
-  const getDefaultImageName = () => getConfig()?.service?.build.image ?? 'e2e-service:latest';
+  const getDefaultImageName = () => getConfig()?.service?.build?.image ?? 'e2e-service:latest';
   const getConfigDir = () => getAppState().configDir;
   const getEventBus = () => getAppState().eventBus;
 
@@ -417,8 +417,8 @@ export const dockerRoutes: FastifyPluginAsync = async (_app) => {
     }
 
     // Step 2: Docker build
-    const dockerfile = config?.service?.build.dockerfile ?? 'Dockerfile';
-    const context = config?.service?.build.context ?? '.';
+    const dockerfile = config?.service?.build?.dockerfile ?? 'Dockerfile';
+    const context = config?.service?.build?.context ?? '.';
     // Resolve paths using workspace manager (handles remote vs local repos)
     const { resolvedDockerfile, resolvedContext } = resolveBuildPaths(
       repos, projectName, configDir, dockerfile, context,
@@ -427,7 +427,7 @@ export const dockerRoutes: FastifyPluginAsync = async (_app) => {
     const args = ['build', '-f', resolvedDockerfile, '-t', imageName];
     if (noCache) args.push('--no-cache');
     // Add build args from config
-    if (config?.service?.build.args) {
+    if (config?.service?.build?.args) {
       for (const [key, value] of Object.entries(config.service.build.args)) {
         args.push('--build-arg', `${key}=${value}`);
       }
@@ -553,14 +553,14 @@ export const dockerRoutes: FastifyPluginAsync = async (_app) => {
         if (!body?.skipBuild) {
           updateStage('build', { status: 'running', startTime: Date.now() });
           const buildResult = await new Promise<boolean>((resolve) => {
-            const dockerfile = config?.service?.build.dockerfile ?? 'Dockerfile';
-            const context = config?.service?.build.context ?? '.';
+            const dockerfile = config?.service?.build?.dockerfile ?? 'Dockerfile';
+            const context = config?.service?.build?.context ?? '.';
             const { resolvedDockerfile, resolvedContext } = resolveBuildPaths(
               repos, projectName, configDir, dockerfile, context,
             );
             const args = ['build', '-f', resolvedDockerfile, '-t', imageName];
             if (body?.noCache) args.push('--no-cache');
-            if (config?.service?.build.args) {
+            if (config?.service?.build?.args) {
               for (const [key, value] of Object.entries(config.service.build.args)) {
                 args.push('--build-arg', `${key}=${value}`);
               }

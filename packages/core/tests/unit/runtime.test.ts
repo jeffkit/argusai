@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   DockerRuntime,
   KubernetesRuntime,
+  HostRuntime,
   createRuntime,
   type ContainerRuntime,
   type RuntimeRunOptions,
@@ -21,7 +22,7 @@ vi.mock('../../src/docker-engine.js', () => ({
   getContainerStatus: vi.fn(async (): Promise<'running'> => 'running'),
   isContainerRunning: vi.fn(async () => true),
   getContainerLogs: vi.fn(async () => 'log line 1\nlog line 2'),
-  execInContainer: vi.fn(async () => 'exec output'),
+  execInContainer: vi.fn(async () => ({ stdout: 'exec output', exitCode: 0 })),
   ensureNetwork: vi.fn(async () => {}),
   removeNetwork: vi.fn(async () => {}),
   waitForHealthy: vi.fn(async () => true),
@@ -101,9 +102,10 @@ describe('DockerRuntime', () => {
     expect(dockerEngine.getContainerLogs).toHaveBeenCalledWith('test-container', 50);
   });
 
-  it('execInContainer delegates to docker-engine', async () => {
-    const output = await runtime.execInContainer('test-container', 'echo hello');
-    expect(output).toBe('exec output');
+  it('execInContainer delegates to docker-engine and returns RuntimeExecResult', async () => {
+    const result = await runtime.execInContainer('test-container', 'echo hello');
+    expect(result).toEqual({ stdout: 'exec output', exitCode: 0 });
+    expect(dockerEngine.execInContainer).toHaveBeenCalledWith('test-container', 'echo hello');
   });
 
   it('ensureNetwork delegates to docker-engine', async () => {
@@ -259,5 +261,77 @@ describe('createRuntime factory', () => {
     expect(runtime).toBeInstanceOf(KubernetesRuntime);
     const spec = (runtime as any).buildPodSpec(makeRunOptions());
     expect(spec.metadata.namespace).toBe('ci');
+  });
+
+  it('creates HostRuntime when type is "host"', () => {
+    const runtime = createRuntime({ type: 'host' });
+    expect(runtime).toBeInstanceOf(HostRuntime);
+    expect(runtime.name).toBe('host');
+  });
+});
+
+// =====================================================================
+// HostRuntime
+// =====================================================================
+
+describe('HostRuntime', () => {
+  it('satisfies ContainerRuntime', () => {
+    const runtime: ContainerRuntime = new HostRuntime();
+    expect(runtime.name).toBe('host');
+    expect(typeof runtime.buildImage).toBe('function');
+    expect(typeof runtime.startContainer).toBe('function');
+    expect(typeof runtime.execInContainer).toBe('function');
+  });
+
+  it('execInContainer runs commands on the host via sh -c', async () => {
+    const runtime = new HostRuntime();
+    // Use a real command that is guaranteed to exist on any POSIX host.
+    const result = await runtime.execInContainer('ignored-name', 'echo hello-host');
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('hello-host');
+  });
+
+  it('execInContainer returns non-zero exitCode on failure', async () => {
+    const runtime = new HostRuntime();
+    // `false` always exits 1 on POSIX; `exit 42` gives a specific code.
+    const result = await runtime.execInContainer('ignored', 'exit 42');
+    expect(result.exitCode).toBe(42);
+  });
+
+  it('ignores the container name argument', async () => {
+    const runtime = new HostRuntime();
+    const r1 = await runtime.execInContainer('whatever', 'echo same');
+    const r2 = await runtime.execInContainer('different', 'echo same');
+    expect(r1.stdout).toBe(r2.stdout);
+    expect(r1.exitCode).toBe(0);
+  });
+
+  it('container lifecycle methods are no-ops that do not throw', async () => {
+    const runtime = new HostRuntime();
+    // These should all resolve without error.
+    await expect(runtime.startContainer(makeRunOptions())).resolves.toBe('host');
+    await expect(runtime.stopContainer('any')).resolves.toBeUndefined();
+    await expect(runtime.ensureNetwork('any')).resolves.toBeUndefined();
+    await expect(runtime.removeNetwork('any')).resolves.toBeUndefined();
+    await expect(runtime.waitForHealthy('any')).resolves.toBe(true);
+  });
+
+  it('getContainerStatus always returns running', async () => {
+    const runtime = new HostRuntime();
+    await expect(runtime.getContainerStatus('any')).resolves.toBe('running');
+    await expect(runtime.isContainerRunning('any')).resolves.toBe(true);
+  });
+
+  it('buildImage yields nothing (no image to build)', async () => {
+    const runtime = new HostRuntime();
+    const events: unknown[] = [];
+    for await (const event of runtime.buildImage({
+      dockerfile: 'Dockerfile',
+      context: '.',
+      imageName: 'test',
+    })) {
+      events.push(event);
+    }
+    expect(events).toHaveLength(0);
   });
 });

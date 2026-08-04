@@ -102,6 +102,18 @@ export class MultiServiceOrchestrator {
     const results = await Promise.allSettled(
       services.map(async (svc) => {
         const buildStart = Date.now();
+
+        // Host-runtime services have no build config (no image to build).
+        if (!svc.build) {
+          return {
+            name: svc.name,
+            image: 'host',
+            status: 'success' as const,
+            duration: 0,
+            error: undefined,
+          };
+        }
+
         const buildOpts: DockerBuildOptions = {
           dockerfile: svc.build.dockerfile,
           context: svc.build.context,
@@ -173,7 +185,7 @@ export class MultiServiceOrchestrator {
       try {
         const runOpts: DockerRunOptions = {
           name: svc.container.name,
-          image: svc.build.image,
+          image: svc.build?.image ?? 'host',
           ports: svc.container.ports,
           environment: svc.container.environment,
           volumes: svc.container.volumes,

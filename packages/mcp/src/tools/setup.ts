@@ -297,6 +297,22 @@ export async function handleSetup(
 
   for (const svc of orderedServices) {
     try {
+      // Host-runtime services have no image and run directly on the host
+      // (the binary is built separately). Skip container startup entirely.
+      if (!svc.build) {
+        serviceResults.push({
+          name: svc.name,
+          containerId: 'host',
+          status: 'running',
+          ports: svc.container.ports.map(p => {
+            const [, container] = p.split(':');
+            return { host: parseInt(container ?? p, 10), container: parseInt(container ?? p, 10) };
+          }),
+        });
+        session.containerNames.set(svc.container.name, 'host');
+        continue;
+      }
+
       bus?.emit('setup', { event: 'service_starting', data: { type: 'service_starting', name: svc.name, image: svc.build.image, timestamp: ts() } });
       // Namespace-prefix the container name so concurrent sessions (e.g.
       // per-worktree MCP servers) never collide on `--name`; the original

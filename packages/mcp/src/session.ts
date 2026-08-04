@@ -27,7 +27,8 @@ import { randomUUID } from 'node:crypto';
 import { Mutex } from 'async-mutex';
 import type { E2EConfig, SSEBus, PortMapping, CircuitBreakerState, HistoryConfig, DrizzleHistoryStoreWithDb } from 'argusai-core';
 import type { HistoryStore, KnowledgeStore } from 'argusai-core';
-import { CircuitBreaker, createHistoryStore, HistoryRecorder, SQLiteHistoryStore, SQLiteKnowledgeStore, NoopKnowledgeStore, PortAllocator, DrizzleHistoryStore, DrizzleKnowledgeStore, createSqliteDbFromDatabase, loadConfig } from 'argusai-core';
+import { CircuitBreaker, createHistoryStore, HistoryRecorder, SQLiteHistoryStore, SQLiteKnowledgeStore, NoopKnowledgeStore, PortAllocator, DrizzleHistoryStore, DrizzleKnowledgeStore, createSqliteDbFromDatabase, loadConfig, createRuntime } from 'argusai-core';
+import type { ContainerRuntime } from 'argusai-core';
 
 // =====================================================================
 // Types
@@ -65,6 +66,8 @@ export interface ProjectSession {
   historyRecorder?: HistoryRecorder;
   /** Knowledge store for failure pattern diagnostics */
   knowledgeStore?: KnowledgeStore;
+  /** Container runtime instance (docker/kubernetes/host) selected by config */
+  runtime: ContainerRuntime;
   /**
    * True when the session was created lazily by {@link SessionManager.ensure}
    * (e.g. a read-only tool) rather than by an explicit `argus_init`. Such
@@ -424,6 +427,7 @@ export class SessionManager {
       runId: randomUUID(),
       activeGuardians: new Map(),
       circuitBreaker,
+      runtime: createRuntime(config.runtime ?? { type: 'docker' }),
       historyStore,
       historyRecorder,
       knowledgeStore,

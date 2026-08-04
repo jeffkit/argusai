@@ -348,20 +348,31 @@ export async function getContainerLogs(name: string, lines = 100): Promise<strin
  *
  * @param name - Container name
  * @param command - Shell command to execute
- * @returns Command output
- * @throws {Error} If the command fails or the container is not running
+ * @returns `{ stdout, exitCode }` — exitCode is 0 on success, non-zero on
+ *   failure. stdout includes the command's output (or stderr on failure).
+ *   Never throws: callers (runtime layer, yaml-engine) decide how to handle
+ *   non-zero exit codes.
  */
-export async function execInContainer(name: string, command: string): Promise<string> {
+export async function execInContainer(
+  name: string,
+  command: string,
+): Promise<{ stdout: string; exitCode: number }> {
   try {
     const { stdout } = await execFileAsync('docker', dockerArgs(['exec', name, 'sh', '-c', command]), {
       encoding: 'utf-8',
       timeout: 15_000,
     });
-    return stdout.trim();
-  } catch (err) {
-    throw new Error(
-      `Failed to exec in "${name}": ${err instanceof Error ? err.message : String(err)}`,
-    );
+    return { stdout: stdout.trim(), exitCode: 0 };
+  } catch (err: unknown) {
+    const execErr = err as { stdout?: string; stderr?: string; code?: number | string };
+    const output = (execErr.stdout || execErr.stderr || '').trim();
+    // execFileAsync sets code to the process exit code (number) on non-zero
+    // exit, or to a string error code (e.g. 'ENOENT') if docker isn't found.
+    // For our purposes, a non-numeric code means docker itself failed → treat
+    // as exit code 1 and surface the error message.
+    const rawCode = execErr.code;
+    const exitCode = typeof rawCode === 'number' ? rawCode : 1;
+    return { stdout: output, exitCode };
   }
 }
 

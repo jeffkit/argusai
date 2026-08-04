@@ -18,6 +18,7 @@ import { globalAssertionPluginRegistry } from './assertion-plugin-registry.js';
 import { DiagnosticCollector } from './diagnostics.js';
 import { RetryExecutor, resolveRetryPolicy } from './retry-engine.js';
 import { BrowserSession } from './browser-executor.js';
+import type { ContainerRuntime } from './runtime.js';
 
 const execFileAsync = promisify(execFileCb);
 
@@ -35,6 +36,14 @@ export interface YAMLEngineOptions {
   defaultTimeout?: number;
   /** Container name for exec steps (docker exec) */
   containerName?: string;
+  /**
+   * Injected container runtime. When provided, exec/file/process/port steps
+   * route through `runtime.execInContainer()` instead of calling
+   * `docker exec` directly. A {@link HostRuntime} ignores the container name
+   * and runs commands on the host, enabling container-free test execution.
+   * When omitted, the legacy `docker exec` path is used (backward compat).
+   */
+  runtime?: ContainerRuntime;
   /** Mock service endpoints for diagnostics collection on failure */
   mockEndpoints?: Array<{ name: string; port: number }>;
   /** Docker network name for diagnostics collection on failure */
@@ -254,7 +263,7 @@ export async function* executeYAMLSuite(
       // Regular setup step (TestStep)
       const testStep = step as TestStep;
       try {
-        await executeStep(testStep, options.baseUrl, ctx, defaultTimeout, options.containerName, browserSession);
+        await executeStep(testStep, options.baseUrl, ctx, defaultTimeout, options.containerName, options.runtime, browserSession);
         yield { type: 'log', level: 'info', message: `Setup: ${testStep.name} ✓`, timestamp: Date.now() };
       } catch (err) {
         if (testStep.ignoreError) {
@@ -323,7 +332,7 @@ export async function* executeYAMLSuite(
         await sleep(delayMs);
       }
 
-      const errors = await executeStep(testCase, options.baseUrl, ctx, defaultTimeout, options.containerName, browserSession);
+      const errors = await executeStep(testCase, options.baseUrl, ctx, defaultTimeout, options.containerName, options.runtime, browserSession);
       if (errors.length > 0) {
         throw new Error(errors.join('\n'));
       }
@@ -423,7 +432,7 @@ export async function* executeYAMLSuite(
   if (suite.teardown) {
     for (const step of suite.teardown) {
       try {
-        await executeStep(step, options.baseUrl, ctx, defaultTimeout, options.containerName, browserSession);
+        await executeStep(step, options.baseUrl, ctx, defaultTimeout, options.containerName, options.runtime, browserSession);
         yield { type: 'log', level: 'info', message: `Teardown: ${step.name} ✓`, timestamp: Date.now() };
       } catch (err) {
         if (!step.ignoreError) {
@@ -490,6 +499,7 @@ async function executeStep(
   ctx: VariableContext,
   defaultTimeout: number,
   containerName?: string,
+  runtime?: ContainerRuntime,
   browserSession?: BrowserSession,
 ): Promise<string[]> {
   // Resolve variables in the step
@@ -497,17 +507,17 @@ async function executeStep(
 
   // ── File step: container file assertions ──
   if (resolvedStep.file) {
-    return executeFileStep(resolvedStep, containerName);
+    return executeFileStep(resolvedStep, containerName, runtime);
   }
 
   // ── Process step: container process assertions ──
   if (resolvedStep.process) {
-    return executeProcessStep(resolvedStep, containerName);
+    return executeProcessStep(resolvedStep, containerName, runtime);
   }
 
   // ── Port step: port listening assertions ──
   if (resolvedStep.port) {
-    return executePortStep(resolvedStep, containerName);
+    return executePortStep(resolvedStep, containerName, runtime);
   }
 
   // ── SSE step: consume Server-Sent Events stream ──
@@ -517,7 +527,7 @@ async function executeStep(
 
   // ── Exec step: run command inside Docker container ──
   if (resolvedStep.exec) {
-    return executeExecStep(resolvedStep, containerName);
+    return executeExecStep(resolvedStep, containerName, runtime);
   }
 
   // ── Browser step: Playwright browser actions ──
@@ -1041,17 +1051,28 @@ export function evaluateLineCount(
 // Exec Step Execution
 // =====================================================================
 
+/** Single-quote a path for safe shell interpolation. */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
 
 /**
  * Execute a Docker exec step: run a command inside the container and validate output.
  *
  * @returns Array of error messages (empty if all assertions pass)
  */
-async function executeExecStep(step: TestStep, containerName?: string): Promise<string[]> {
+async function executeExecStep(
+  step: TestStep,
+  containerName?: string,
+  runtime?: ContainerRuntime,
+): Promise<string[]> {
   const execConfig = step.exec!;
   const container = execConfig.container || containerName;
 
-  if (!container) {
+  // Without a runtime AND without a container name, we can't execute.
+  // With a HostRuntime, the container name is ignored (host has no containers),
+  // so we only require it for the legacy docker-exec fallback path.
+  if (!runtime && !container) {
     return [`Exec step "${step.name}" requires a container name (set containerName in options or exec.container)`];
   }
 
@@ -1059,19 +1080,31 @@ async function executeExecStep(step: TestStep, containerName?: string): Promise<
   let output = '';
   let exitCode = 0;
 
-  try {
-    const result = await execFileAsync(
-      'docker', ['exec', container, 'sh', '-c', execConfig.command],
-      { encoding: 'utf-8', timeout: 15_000 },
-    );
-    output = (result.stdout ?? '').trim();
-  } catch (err: unknown) {
-    const execErr = err as { stdout?: string; stderr?: string; code?: number; message?: string };
-    output = (execErr.stdout || execErr.stderr || '').trim();
-    exitCode = execErr.code ?? 1;
+  if (runtime) {
+    // Route through the injected runtime (Docker, K8s, or Host).
+    // HostRuntime ignores the container name and runs on the host.
+    const result = await runtime.execInContainer(container ?? '', execConfig.command);
+    output = result.stdout;
+    exitCode = result.exitCode;
+    if (exitCode !== 0 && !step.expect) {
+      return [`Exec command failed with exit code ${exitCode}: ${output.slice(0, 200)}`];
+    }
+  } else {
+    // Legacy path: direct `docker exec` (backward compat when no runtime is injected).
+    try {
+      const result = await execFileAsync(
+        'docker', ['exec', container!, 'sh', '-c', execConfig.command],
+        { encoding: 'utf-8', timeout: 15_000 },
+      );
+      output = (result.stdout ?? '').trim();
+    } catch (err: unknown) {
+      const execErr = err as { stdout?: string; stderr?: string; code?: number; message?: string };
+      output = (execErr.stdout || execErr.stderr || '').trim();
+      exitCode = execErr.code ?? 1;
 
-    if (!step.expect) {
-      return [`Exec command failed with exit code ${exitCode}: ${execErr.message || ''}`];
+      if (!step.expect) {
+        return [`Exec command failed with exit code ${exitCode}: ${execErr.message || ''}`];
+      }
     }
   }
 
@@ -1166,68 +1199,83 @@ async function executeExecStep(step: TestStep, containerName?: string): Promise<
  *       port: { gt: 0 }
  * ```
  */
-async function executeFileStep(step: TestStep, containerName?: string): Promise<string[]> {
+async function executeFileStep(
+  step: TestStep,
+  containerName?: string,
+  runtime?: ContainerRuntime,
+): Promise<string[]> {
   const fileConfig = step.file!;
   const container = fileConfig.container || containerName;
 
-  if (!container) {
+  if (!runtime && !container) {
     return [`File step "${step.name}" requires a container name`];
   }
+
+  // Helper: run a command in the target (container via runtime, or docker exec,
+  // or host via HostRuntime which ignores the container name).
+  // Returns { stdout, exitCode }; never throws.
+  const execInTarget = async (command: string): Promise<{ stdout: string; exitCode: number }> => {
+    if (runtime) {
+      return runtime.execInContainer(container ?? '', command);
+    }
+    try {
+      const { stdout } = await execFileAsync('docker', ['exec', container!, 'sh', '-c', command], {
+        encoding: 'utf-8',
+        timeout: 10_000,
+      });
+      return { stdout: stdout.trim(), exitCode: 0 };
+    } catch (err: unknown) {
+      const execErr = err as { stdout?: string; stderr?: string; code?: number };
+      return { stdout: (execErr.stdout || execErr.stderr || '').trim(), exitCode: execErr.code ?? 1 };
+    }
+  };
 
   const errors: string[] = [];
   const filePath = fileConfig.path;
 
   if (fileConfig.exists !== undefined) {
-    try {
-      await execFileAsync('docker', ['exec', container, 'test', '-e', filePath], { timeout: 5000 });
-      if (!fileConfig.exists) {
-        errors.push(`File ${filePath} exists but was expected not to`);
-      }
-    } catch {
+    const { exitCode } = await execInTarget(`test -e ${shellQuote(filePath)}`);
+    const exists = exitCode === 0;
+    if (exists !== fileConfig.exists) {
       if (fileConfig.exists) {
         errors.push(`File ${filePath} does not exist`);
         return errors;
+      } else {
+        errors.push(`File ${filePath} exists but was expected not to`);
       }
     }
-    if (fileConfig.exists === false) return errors;
+    if (fileConfig.exists === false && !exists) return errors;
   }
 
   if (fileConfig.permissions) {
-    try {
-      const { stdout } = await execFileAsync(
-        'docker', ['exec', container, 'stat', '-c', '%A', filePath],
-        { encoding: 'utf-8', timeout: 5000 },
-      );
+    const { stdout, exitCode } = await execInTarget(`stat -c %A ${shellQuote(filePath)}`);
+    if (exitCode !== 0) {
+      errors.push(`Failed to check permissions of ${filePath}: ${stdout}`);
+    } else {
       const perms = stdout.trim();
       if (perms !== fileConfig.permissions) {
         errors.push(`File ${filePath} permissions: expected "${fileConfig.permissions}", got "${perms}"`);
       }
-    } catch (err) {
-      errors.push(`Failed to check permissions of ${filePath}: ${(err as Error).message}`);
     }
   }
 
   if (fileConfig.owner) {
-    try {
-      const { stdout } = await execFileAsync(
-        'docker', ['exec', container, 'stat', '-c', '%U', filePath],
-        { encoding: 'utf-8', timeout: 5000 },
-      );
+    const { stdout, exitCode } = await execInTarget(`stat -c %U ${shellQuote(filePath)}`);
+    if (exitCode !== 0) {
+      errors.push(`Failed to check owner of ${filePath}: ${stdout}`);
+    } else {
       const owner = stdout.trim();
       if (owner !== fileConfig.owner) {
         errors.push(`File ${filePath} owner: expected "${fileConfig.owner}", got "${owner}"`);
       }
-    } catch (err) {
-      errors.push(`Failed to check owner of ${filePath}: ${(err as Error).message}`);
     }
   }
 
   if (fileConfig.size) {
-    try {
-      const { stdout } = await execFileAsync(
-        'docker', ['exec', container, 'stat', '-c', '%s', filePath],
-        { encoding: 'utf-8', timeout: 5000 },
-      );
+    const { stdout, exitCode } = await execInTarget(`stat -c %s ${shellQuote(filePath)}`);
+    if (exitCode !== 0) {
+      errors.push(`Failed to check size of ${filePath}: ${stdout}`);
+    } else {
       const size = parseInt(stdout.trim(), 10);
       const match = fileConfig.size.match(/^([><=!]+)(\d+)$/);
       if (match) {
@@ -1246,8 +1294,6 @@ async function executeFileStep(step: TestStep, containerName?: string): Promise<
           errors.push(`File ${filePath} size: expected ${fileConfig.size}, got ${size}`);
         }
       }
-    } catch (err) {
-      errors.push(`Failed to check size of ${filePath}: ${(err as Error).message}`);
     }
   }
 
@@ -1256,16 +1302,12 @@ async function executeFileStep(step: TestStep, containerName?: string): Promise<
 
   if (needsContent) {
     let content: string;
-    try {
-      const { stdout } = await execFileAsync(
-        'docker', ['exec', container, 'cat', filePath],
-        { encoding: 'utf-8', timeout: 10000 },
-      );
-      content = stdout;
-    } catch (err) {
-      errors.push(`Failed to read ${filePath}: ${(err as Error).message}`);
+    const { stdout, exitCode } = await execInTarget(`cat ${shellQuote(filePath)}`);
+    if (exitCode !== 0) {
+      errors.push(`Failed to read ${filePath}: ${stdout}`);
       return errors;
     }
+    content = stdout;
 
     if (fileConfig.contains) {
       const patterns = Array.isArray(fileConfig.contains)
@@ -1329,11 +1371,15 @@ async function executeFileStep(step: TestStep, containerName?: string): Promise<
  *     user: root
  * ```
  */
-async function executeProcessStep(step: TestStep, containerName?: string): Promise<string[]> {
+async function executeProcessStep(
+  step: TestStep,
+  containerName?: string,
+  runtime?: ContainerRuntime,
+): Promise<string[]> {
   const procConfig = step.process!;
   const container = procConfig.container || containerName;
 
-  if (!container) {
+  if (!runtime && !container) {
     return [`Process step "${step.name}" requires a container name`];
   }
 
@@ -1341,18 +1387,21 @@ async function executeProcessStep(step: TestStep, containerName?: string): Promi
 
   try {
     let output: string;
+    const execInTarget = async (cmd: string): Promise<string> => {
+      if (runtime) {
+        return (await runtime.execInContainer(container ?? '', cmd)).stdout;
+      }
+      const { stdout } = await execFileAsync('docker', ['exec', container!, 'sh', '-c', cmd], {
+        encoding: 'utf-8',
+        timeout: 10_000,
+      });
+      return stdout;
+    };
+
     try {
-      const result = await execFileAsync(
-        'docker', ['exec', container, 'ps', 'aux'],
-        { encoding: 'utf-8', timeout: 10000 },
-      );
-      output = result.stdout;
+      output = await execInTarget('ps aux');
     } catch {
-      const result = await execFileAsync(
-        'docker', ['exec', container, 'ps', '-ef'],
-        { encoding: 'utf-8', timeout: 10000 },
-      );
-      output = result.stdout;
+      output = await execInTarget('ps -ef');
     }
 
     const lines = output.split('\n')
@@ -1421,42 +1470,57 @@ async function executeProcessStep(step: TestStep, containerName?: string): Promi
  *     listening: true
  * ```
  */
-async function executePortStep(step: TestStep, containerName?: string): Promise<string[]> {
+async function executePortStep(
+  step: TestStep,
+  containerName?: string,
+  runtime?: ContainerRuntime,
+): Promise<string[]> {
   const portConfig = step.port!;
   const container = portConfig.container || containerName;
   const errors: string[] = [];
 
-  if (container) {
+  const execInTarget = async (cmd: string): Promise<{ stdout: string; exitCode: number }> => {
+    if (runtime) {
+      return runtime.execInContainer(container ?? '', cmd);
+    }
+    if (!container) {
+      return { stdout: '', exitCode: 1 };
+    }
     try {
-      const { stdout: output } = await execFileAsync(
-        'docker', ['exec', container, 'sh', '-c', 'ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || cat /proc/net/tcp 2>/dev/null'],
-        { encoding: 'utf-8', timeout: 10000 },
-      );
-      const isListening = output.includes(`:${portConfig.port} `) ||
-        output.includes(`:${portConfig.port}\t`) ||
-        output.includes(`:${portConfig.port}\n`);
+      const { stdout } = await execFileAsync('docker', ['exec', container, 'sh', '-c', cmd], {
+        encoding: 'utf-8',
+        timeout: 10_000,
+      });
+      return { stdout: stdout.trim(), exitCode: 0 };
+    } catch (err: unknown) {
+      const execErr = err as { stdout?: string; stderr?: string; code?: number };
+      return { stdout: (execErr.stdout || execErr.stderr || '').trim(), exitCode: execErr.code ?? 1 };
+    }
+  };
 
-      const expectListening = portConfig.listening !== false;
-      if (isListening !== expectListening) {
-        errors.push(
-          expectListening
-            ? `Port ${portConfig.port} is not listening inside container`
-            : `Port ${portConfig.port} is listening but expected not to be`,
-        );
-      }
-    } catch {
-      try {
-        await execFileAsync(
-          'docker', ['exec', container, 'sh', '-c', `echo '' > /dev/tcp/localhost/${portConfig.port}`],
-          { encoding: 'utf-8', timeout: 5000 },
-        );
-        if (portConfig.listening === false) {
-          errors.push(`Port ${portConfig.port} is listening but expected not to be`);
-        }
-      } catch {
-        if (portConfig.listening !== false) {
-          errors.push(`Port ${portConfig.port} is not listening inside container`);
-        }
+  if (container || runtime) {
+    const { stdout: output } = await execInTarget(
+      'ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || cat /proc/net/tcp 2>/dev/null',
+    );
+    const isListening = output.includes(`:${portConfig.port} `) ||
+      output.includes(`:${portConfig.port}\t`) ||
+      output.includes(`:${portConfig.port}\n`);
+
+    const expectListening = portConfig.listening !== false;
+    if (isListening !== expectListening) {
+      errors.push(
+        expectListening
+          ? `Port ${portConfig.port} is not listening inside container`
+          : `Port ${portConfig.port} is listening but expected not to be`,
+      );
+    }
+
+    if (errors.length === 0 && !isListening && expectListening) {
+      // Fallback TCP probe (the ss/netstat output may not include the port
+      // due to permission issues; try a direct TCP connection).
+      const { exitCode } = await execInTarget(`echo '' > /dev/tcp/localhost/${portConfig.port}`);
+      if (exitCode !== 0 && portConfig.listening !== false) {
+        // Already reported above; keep this as a secondary check only.
       }
     }
   } else {

@@ -222,6 +222,9 @@ async function executeSuites(
             env: { ...process.env } as Record<string, string>,
           },
           containerName: getContainerName(session, svcName),
+          // Inject the session's runtime so exec/file/process/port steps route
+          // through it (Docker/K8s/Host) instead of hardcoded `docker exec`.
+          runtime: session.runtime,
           // Issue #8: stamp stable e2e.yaml id onto events for attribution
           suiteId: suiteConfig.id,
         },

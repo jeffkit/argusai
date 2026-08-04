@@ -79,7 +79,7 @@ export class ResilientDockerEngine {
     return this.circuitBreaker.execute(() => rawGetContainerLogs(name, lines));
   }
 
-  async execInContainer(name: string, command: string): Promise<string> {
+  async execInContainer(name: string, command: string): Promise<{ stdout: string; exitCode: number }> {
     return this.circuitBreaker.execute(() => rawExecInContainer(name, command));
   }
 

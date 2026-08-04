@@ -39,12 +39,14 @@ function getServicesToBuild(config: E2EConfig, serviceFilter?: string): ServiceB
   if (config.services && config.services.length > 0) {
     for (const svc of config.services) {
       if (serviceFilter && svc.name !== serviceFilter) continue;
+      if (!svc.build) continue; // host-runtime service — no image to build
       targets.push({ name: svc.name, build: svc.build });
     }
-  } else if (config.service) {
-    const svc: ServiceConfig = config.service;
+  } else if (config.service?.build) {
+    const build = config.service.build;
+    const svc = config.service;
     if (!serviceFilter || svc.container.name === serviceFilter) {
-      targets.push({ name: svc.container.name, build: svc.build });
+      targets.push({ name: svc.container.name, build });
     }
   }
 

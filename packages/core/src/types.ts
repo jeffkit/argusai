@@ -61,7 +61,11 @@ export interface ServiceContainerConfig {
 
 /** 服务配置 */
 export interface ServiceConfig {
-  build: ServiceBuildConfig;
+  /**
+   * Image build config. Required for docker/kubernetes runtimes; optional
+   * for `host` runtime (no image is built — the binary runs on the host).
+   */
+  build?: ServiceBuildConfig;
   container: ServiceContainerConfig;
   /** 自定义变量 */
   vars?: Record<string, string>;
@@ -224,6 +228,16 @@ export interface E2EConfig {
   history?: _HistoryConfig;
   /** Multi-project isolation configuration */
   isolation?: IsolationConfig;
+  /**
+   * Container runtime selection. Default: `{ type: 'docker' }`.
+   *
+   * Set `{ type: 'host' }` to run test commands directly on the host machine
+   * (no containers, no image builds). The service under test must be built
+   * separately (e.g. `cargo build`) and mock services are started by plugins
+   * on host ports. This is useful for fast iteration without Docker image
+   * builds.
+   */
+  runtime?: { type?: 'docker' | 'kubernetes' | 'host' };
   /** Server sync configuration (optional — omitting preserves local-only behavior) */
   server?: ServerConfig;
   /**
@@ -735,7 +749,8 @@ export interface AttemptResult {
 /** Configuration for a single service in multi-service orchestration. */
 export interface ServiceDefinition {
   name: string;
-  build: ServiceBuildConfig;
+  /** Optional for `host` runtime (no image built). */
+  build?: ServiceBuildConfig;
   container: ServiceContainerConfig;
   vars?: Record<string, string>;
   dependsOn?: string[];
