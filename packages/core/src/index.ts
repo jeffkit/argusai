@@ -128,12 +128,16 @@ export type {
 } from './parallel-engine.js';
 
 // Multi-Service Orchestrator
-export { MultiServiceOrchestrator } from './orchestrator.js';
+export { MultiServiceOrchestrator, buildHealthcheckCmd } from './orchestrator.js';
 export type {
   OrchestratorServiceResult,
   BuildAllResult,
   CleanAllResult,
 } from './orchestrator.js';
+
+// Project Analyzer (auto-scaffold e2e.yaml from repo)
+export { analyzeProject, serializeConfig } from './project-analyzer.js';
+export type { AnalyzeOptions, AnalysisReport } from './project-analyzer.js';
 
 // Mock Generator
 export { createMockServer, resolveResponseTemplate } from './mock-generator.js';

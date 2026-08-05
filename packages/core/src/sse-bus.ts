@@ -3,7 +3,8 @@
  * In-process event bus for Server-Sent Events (SSE) broadcasting.
  *
  * Provides a lightweight pub/sub system keyed by channel names.
- * Designed to feed real-time events to the dashboard via SSE.
+ * Designed to feed real-time events to the dashboard via SSE and to
+ * power long-poll style MCP subscriptions.
  */
 
 import type { SSEBus, SSEMessage } from './types.js';
@@ -21,6 +22,10 @@ import type { SSEBus, SSEMessage } from './types.js';
  */
 export class EventBus implements SSEBus {
   private listeners = new Map<string, Set<(msg: SSEMessage) => void>>();
+  /** Ring buffer per channel — used for `subscribeSince()` history replay. */
+  private history = new Map<string, SSEMessage[]>();
+  /** Max events kept per channel. Older events are dropped FIFO. */
+  private static readonly HISTORY_CAPACITY = 200;
 
   /**
    * Emit a message to all subscribers of a channel.
@@ -30,9 +35,20 @@ export class EventBus implements SSEBus {
    */
   emit(channel: string, message: SSEMessage): void {
     const subs = this.listeners.get(channel);
-    if (!subs) return;
-    for (const handler of subs) {
-      handler(message);
+    if (subs) {
+      for (const handler of subs) {
+        handler(message);
+      }
+    }
+    // Append to ring buffer for late subscribers.
+    let buf = this.history.get(channel);
+    if (!buf) {
+      buf = [];
+      this.history.set(channel, buf);
+    }
+    buf.push(message);
+    if (buf.length > EventBus.HISTORY_CAPACITY) {
+      buf.shift();
     }
   }
 
@@ -60,6 +76,20 @@ export class EventBus implements SSEBus {
   }
 
   /**
+   * Replay buffered events for `channel` whose timestamp >= `sinceMs`.
+   * Used by `argus_subscribe` to give late subscribers a short history.
+   *
+   * @param channel - Channel name
+   * @param sinceMs - Lower-bound timestamp in ms (inclusive)
+   * @returns Array of buffered events, oldest first
+   */
+  replaySince(channel: string, sinceMs: number): SSEMessage[] {
+    const buf = this.history.get(channel);
+    if (!buf) return [];
+    return buf.filter((m) => (m.timestamp ?? 0) >= sinceMs);
+  }
+
+  /**
    * Get the number of subscribers for a channel.
    *
    * @param channel - Channel name
@@ -70,10 +100,11 @@ export class EventBus implements SSEBus {
   }
 
   /**
-   * Remove all subscriptions from all channels.
+   * Remove all subscriptions and buffered history from all channels.
    */
   clear(): void {
     this.listeners.clear();
+    this.history.clear();
   }
 }
 

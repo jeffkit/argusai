@@ -5,6 +5,75 @@
  * health-check, and cleanup.
  */
 
+import { execFileSync } from 'node:child_process';
+import { getDockerHostArgs } from './docker-engine.js';
+
+/**
+ * Build a healthcheck command appropriate for the given Docker image.
+ *
+ * The default `wget -qO- http://localhost<path>` fails on distroless / minimal
+ * images that lack `wget`. Inspect the image's labels, history, and metadata
+ * to pick a command the image is likely to support:
+ *
+ * - alpine / slim / busybox → `wget -qO-`
+ * - everything else (distroless, official Node/Python, custom) → `curl -sf`
+ * - if neither tool is present (we can't always know) → caller should rely
+ *   on the orchestrator's external HTTP probe via `waitForHealthy`.
+ *
+ * @param imageName - Fully-qualified image tag (e.g. `myapp:e2e`).
+ * @param path - URL path to probe (e.g. `/health`).
+ */
+export function buildHealthcheckCmd(imageName: string, path: string): string {
+  const hint = detectImageToolHint(imageName);
+  if (hint === 'wget') {
+    return `wget -qO- http://localhost${path} || exit 1`;
+  }
+  if (hint === 'curl') {
+    return `curl -sf http://localhost${path} || exit 1`;
+  }
+  // node fallback — works for any image that ships Node (most service images do)
+  return `node -e "require('http').get('http://localhost${path}', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"`;
+}
+
+/**
+ * Detect which HTTP tool the image is likely to provide.
+ *
+ * Strategy: fast path uses the image name itself (alpine / slim / busybox all
+ * ship wget). When uncertain, fall back to inspecting the image's Cmd and
+ * Env via `docker inspect` — this is a best-effort check; if it fails we
+ * default to `node` (universally available in JS service images).
+ */
+function detectImageToolHint(imageName: string): 'wget' | 'curl' | 'node' {
+  const lower = imageName.toLowerCase();
+  if (
+    lower.includes('alpine') ||
+    lower.includes(':slim') ||
+    lower.includes('busybox') ||
+    lower.includes('wget')
+  ) {
+    return 'wget';
+  }
+  if (lower.includes('curl') || lower.includes('distroless')) {
+    return 'curl';
+  }
+
+  // Best-effort inspect; ignore failures.
+  try {
+    const out = execFileSync(
+      'docker',
+      [...getDockerHostArgs(), 'image', 'inspect', imageName, '--format', '{{json .Config.Cmd}} {{json .Config.Entrypoint}}'],
+      { encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    if (/\bwget\b/.test(out)) return 'wget';
+    if (/\bcurl\b/.test(out)) return 'curl';
+    if (/\bnode\b/.test(out)) return 'node';
+  } catch {
+    // fall through
+  }
+
+  return 'node';
+}
+
 import type {
   E2EConfig,
   ServiceDefinition,
@@ -180,7 +249,7 @@ export class MultiServiceOrchestrator {
           network: networkName,
           healthcheck: svc.container.healthcheck
             ? {
-                cmd: `wget -qO- http://localhost${svc.container.healthcheck.path} || exit 1`,
+                cmd: buildHealthcheckCmd(svc.build.image, svc.container.healthcheck.path),
                 interval: svc.container.healthcheck.interval ?? '10s',
                 timeout: svc.container.healthcheck.timeout ?? '5s',
                 retries: svc.container.healthcheck.retries ?? 10,

@@ -31,6 +31,9 @@ import { handleMockValidate } from './tools/mock-validate.js';
 import { handleResources } from './tools/resources.js';
 import { handleRebuild } from './tools/rebuild.js';
 import { handleDev } from './tools/dev.js';
+import { handleSubscribe } from './tools/subscribe.js';
+import { handleAnalyze } from './tools/analyze.js';
+import { handleCycle } from './tools/cycle.js';
 
 /** Shared platform services injected into tool handlers. */
 export interface PlatformServices {
@@ -47,10 +50,30 @@ export interface CreateServerOptions {
   platform?: PlatformServices;
 }
 
+/**
+ * Error envelope shape returned to AI agents.
+ *
+ * For ArgusError throws, the envelope includes the full StructuredError payload
+ * (category / severity / suggestedActions) so AI agents can decide recovery
+ * actions without parsing free-text messages.
+ */
+export interface McpErrorEnvelope {
+  code: string;
+  message: string;
+  details?: unknown;
+  /** Error category (infrastructure / container / network / system). */
+  category?: string;
+  /** Severity (fatal / recoverable / warning). */
+  severity?: string;
+  /** Machine-readable recovery hints. */
+  suggestedActions?: string[];
+  timestamp?: number;
+}
+
 interface McpToolResponse<T = unknown> {
   success: boolean;
   data?: T;
-  error?: { code: string; message: string; details?: unknown };
+  error?: McpErrorEnvelope;
   /**
    * Current session lifecycle state for the project, or "none" when no session
    * exists. Included in every response so AI agents can track environment state
@@ -99,10 +122,23 @@ function successResponseWithState<T>(
 }
 
 /** Wrap an error in a structured JSON envelope with code and message. */
-function errorResponse(code: string, message: string, details?: unknown): { content: Array<{ type: 'text'; text: string }> } {
+function errorResponse(
+  code: string,
+  message: string,
+  details?: unknown,
+  structured?: { category?: string; severity?: string; suggestedActions?: string[]; timestamp?: number },
+): { content: Array<{ type: 'text'; text: string }> } {
   const envelope: McpToolResponse = {
     success: false,
-    error: { code, message, details },
+    error: {
+      code,
+      message,
+      details,
+      ...(structured?.category ? { category: structured.category } : {}),
+      ...(structured?.severity ? { severity: structured.severity } : {}),
+      ...(structured?.suggestedActions ? { suggestedActions: structured.suggestedActions } : {}),
+      ...(structured?.timestamp ? { timestamp: structured.timestamp } : {}),
+    },
     timestamp: Date.now(),
   };
   return { content: [{ type: 'text' as const, text: JSON.stringify(envelope) }] };
@@ -111,7 +147,18 @@ function errorResponse(code: string, message: string, details?: unknown): { cont
 /** Convert an unknown thrown value into an MCP error response. */
 function handleError(err: unknown): { content: Array<{ type: 'text'; text: string }> } {
   if (err instanceof ArgusError) {
-    return errorResponse(err.code, err.message, err.toJSON());
+    const structured = err.toJSON();
+    return errorResponse(
+      structured.code,
+      structured.message,
+      structured.details,
+      {
+        category: structured.category,
+        severity: structured.severity,
+        suggestedActions: structured.suggestedActions,
+        timestamp: structured.timestamp,
+      },
+    );
   }
   if (err instanceof SessionError) {
     return errorResponse(err.code, err.message);
@@ -243,6 +290,7 @@ export function createServer(options?: CreateServerOptions): {
         'Max failed cases to include in response (default: 20). Prevents context overflow in large suites. ' +
         'Passed cases are always summarised by count only. Use argus_diagnose for full failure details.',
       ),
+      timeout: z.number().optional().describe('Per-runner timeout in milliseconds (default: 300000 = 5min). Applies to vitest/pytest/shell/exec/playwright runners.'),
     },
     async (params) => {
       try {
@@ -262,6 +310,7 @@ export function createServer(options?: CreateServerOptions): {
       projectPath: z.string().optional().describe('[lifecycle] Project path. Runs a single named suite with full per-step output — prefer argus_run for batch execution, use this for focused debugging. Optional when ARGUS_PROJECT_PATH is set.'),
       suiteId: z.string().describe('Suite identifier to run'),
       maxFailures: z.number().optional().default(20).describe('Max failed cases to include in response (default: 20).'),
+      timeout: z.number().optional().describe('Per-runner timeout in milliseconds (default: 300000 = 5min).'),
     },
     async (params) => {
       try {
@@ -313,8 +362,10 @@ export function createServer(options?: CreateServerOptions): {
   server.tool(
     'argus_clean',
     {
-      projectPath: z.string().optional().describe('[lifecycle] Project path. STEP 5 of 5: stops containers, removes network, and destroys session. Optional when ARGUS_PROJECT_PATH is set.'),
+      projectPath: z.string().optional().describe('[lifecycle] Project path. STEP 5 of 5: stops containers, destroys session. By default keeps Docker network and built images for fast re-setup. Optional when ARGUS_PROJECT_PATH is set.'),
       force: z.boolean().optional().describe('Force remove stuck containers'),
+      removeNetwork: z.boolean().optional().describe('Also remove the project Docker network (default: false, kept for reuse)'),
+      removeImages: z.boolean().optional().describe('Also remove built Docker images (default: false, kept for reuse). Pass true for full teardown.'),
     },
     async (params) => {
       try {
@@ -441,6 +492,7 @@ export function createServer(options?: CreateServerOptions): {
       topN: z.number().optional().default(10).describe('Number of flaky cases to return (1-50)'),
       minScore: z.number().optional().default(0.01).describe('Minimum flaky score threshold (0-1)'),
       suiteId: z.string().optional().describe('Filter to a specific suite'),
+      window: z.number().optional().describe('Override sliding-window size (1-1000). Defaults to history.flakyWindow from e2e.yaml.'),
     },
     async (params) => {
       try {
@@ -632,6 +684,83 @@ export function createServer(options?: CreateServerOptions): {
     async (params) => {
       try {
         const result = await handleDev(params, sessionManager, platform);
+        return successResponseWithState(result, sessionManager, params.projectPath);
+      } catch (err) {
+        return handleError(err);
+      }
+    },
+  );
+
+  // =====================================================================
+  // [streaming] Event stream — long-poll subscriptions
+  // =====================================================================
+
+  // Tool 24: argus_subscribe
+  server.tool(
+    'argus_subscribe',
+    {
+      channels: z.array(z.string()).describe('[streaming] Channel names to subscribe to (e.g. ["activity", "build", "tests"]). Common channels: "activity" for lifecycle, "build" for build progress, "tests" / "test" for per-case events, "clean" for cleanup events.'),
+      since: z.number().optional().describe('Lower-bound timestamp in ms (events with timestamp < since are skipped). Default: now. Use the previous response\'s nextSince to avoid gaps.'),
+      timeoutMs: z.number().optional().default(5000).describe('Long-poll timeout in ms (0-30000). New events arriving during this window are returned. Default: 5000.'),
+      maxEvents: z.number().optional().default(100).describe('Hard cap on returned events (1-1000). Default: 100. Set hasMore=true to refetch with a new since.'),
+    },
+    async (params) => {
+      try {
+        const result = await handleSubscribe(params, options?.eventBus ?? sessionManager.eventBus);
+        return successResponse(result);
+      } catch (err) {
+        return handleError(err);
+      }
+    },
+  );
+
+  // =====================================================================
+  // [scaffold] Project analysis — auto-detect e2e.yaml from repo
+  // =====================================================================
+
+  // Tool 25: argus_analyze
+  server.tool(
+    'argus_analyze',
+    {
+      projectPath: z.string().describe('[scaffold] Absolute path to project directory. Scans for package.json / pyproject.toml / go.mod / Cargo.toml / Dockerfile / OpenAPI specs and produces a draft e2e.yaml. Best first call when bootstrapping a new project.'),
+      projectName: z.string().optional().describe('Override the detected project name (defaults to directory basename).'),
+      writeConfig: z.boolean().optional().describe('When true, materialize the suggested e2e.yaml draft to disk. Default: false (returns the report only).'),
+      configFile: z.string().optional().describe('Config filename when writeConfig=true (default: e2e.yaml).'),
+      overwrite: z.boolean().optional().describe('Overwrite existing config file. Default: false (refuses if file already exists).'),
+    },
+    async (params) => {
+      try {
+        const result = await handleAnalyze(params);
+        return successResponse(result);
+      } catch (err) {
+        return handleError(err);
+      }
+    },
+  );
+
+  // =====================================================================
+  // [lifecycle] Composite: full E2E cycle in one call
+  // =====================================================================
+
+  // Tool 26: argus_cycle
+  server.tool(
+    'argus_cycle',
+    {
+      projectPath: z.string().describe('[lifecycle] Absolute path to project directory. One-shot test cycle: init → build → setup → run → (auto-diagnose on failure) → clean. Replaces chained calls for AI agents that want full automation.'),
+      configFile: z.string().optional().describe('Config filename override (default: e2e.yaml).'),
+      noCache: z.boolean().optional().describe('Disable Docker layer cache for build.'),
+      filter: z.string().optional().describe('Suite ID filter passed through to argus_run (comma-separated for multiple).'),
+      parallel: z.boolean().optional().describe('Override parallel execution setting.'),
+      timeout: z.number().optional().describe('Per-runner timeout in ms (passed to argus_run).'),
+      autoDiagnose: z.boolean().optional().default(true).describe('When run fails, automatically call argus_diagnose on the first failed case. Default: true.'),
+      keepEnvironment: z.boolean().optional().describe('Skip the final clean phase. Default: false. Useful for manual debugging after a failed cycle.'),
+      removeNetwork: z.boolean().optional().describe('Pass through to argus_clean — remove the Docker network too. Default: false.'),
+      removeImages: z.boolean().optional().describe('Pass through to argus_clean — remove built Docker images too. Default: false.'),
+      dryRun: z.boolean().optional().describe('If true, do not execute — return a plan describing the cycle phases. Default: false.'),
+    },
+    async (params) => {
+      try {
+        const result = await handleCycle(params, sessionManager, formatter, platform);
         return successResponseWithState(result, sessionManager, params.projectPath);
       } catch (err) {
         return handleError(err);

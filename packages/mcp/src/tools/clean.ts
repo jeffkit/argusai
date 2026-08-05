@@ -4,15 +4,26 @@
  *
  * Uses MultiServiceOrchestrator for config normalization, while keeping
  * Docker calls at this level for testability.
+ *
+ * Default behavior is intentionally conservative: containers are stopped,
+ * mock servers shut down, and the in-memory session is destroyed. By
+ * default the Docker network and built images are KEPT so subsequent
+ * `argus_setup` calls can reuse them without rebuilding. Pass
+ * `removeNetwork: true` and/or `removeImages: true` for full teardown.
  */
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   stopContainer,
   removeNetwork,
   findContainersByLabel,
   MultiServiceOrchestrator,
+  getDockerHostArgs,
 } from 'argusai-core';
 import { SessionManager, SessionError } from '../session.js';
+
+const execFileAsync = promisify(execFile);
 
 export interface CleanResult {
   containers: Array<{
@@ -27,23 +38,31 @@ export interface CleanResult {
   }>;
   network: {
     name: string;
-    action: 'removed' | 'not_found' | 'failed';
+    action: 'removed' | 'not_found' | 'failed' | 'kept';
     error?: string;
   };
+  images: Array<{
+    name: string;
+    action: 'removed' | 'not_found' | 'failed' | 'kept';
+    error?: string;
+  }>;
   sessionRemoved: boolean;
 }
 
 /**
  * Handle the argus_clean MCP tool call.
- * Stops containers, shuts down mock servers, removes the Docker network,
- * and destroys the session. Uses best-effort cleanup for all resources.
  *
- * @param params - Tool input with projectPath and optional force flag
+ * Stops containers, shuts down mock servers, and destroys the session.
+ * The Docker network is kept by default; pass `removeNetwork: true` to
+ * remove it. Built images are kept by default; pass `removeImages: true`
+ * to delete them.
+ *
+ * @param params - Tool input with projectPath and optional force/removeImages/removeNetwork flags
  * @param sessionManager - Session store for tracking project state
- * @returns Cleanup results for containers, mocks, network, and session
+ * @returns Cleanup results for containers, mocks, network, images, and session
  */
 export async function handleClean(
-  params: { projectPath: string; force?: boolean },
+  params: { projectPath: string; force?: boolean; removeImages?: boolean; removeNetwork?: boolean },
   sessionManager: SessionManager,
 ): Promise<CleanResult> {
   let session;
@@ -58,6 +77,7 @@ export async function handleClean(
         containers: [],
         mocks: [],
         network: { name: networkName, action: 'not_found' },
+        images: [],
         sessionRemoved: false,
       };
     }
@@ -127,14 +147,40 @@ export async function handleClean(
     }
   }
 
-  // Remove network
+  // Remove network (default: keep — safer for repeated setup cycles)
   let networkResult: CleanResult['network'];
-  try {
-    await removeNetwork(networkName);
-    bus?.emit('clean', { event: 'network_removed', data: { type: 'network_removed', name: networkName, timestamp: Date.now() } });
-    networkResult = { name: networkName, action: 'removed' };
-  } catch {
-    networkResult = { name: networkName, action: 'failed' };
+  if (params.removeNetwork) {
+    try {
+      await removeNetwork(networkName);
+      bus?.emit('clean', { event: 'network_removed', data: { type: 'network_removed', name: networkName, timestamp: Date.now() } });
+      networkResult = { name: networkName, action: 'removed' };
+    } catch {
+      networkResult = { name: networkName, action: 'failed' };
+    }
+  } else {
+    networkResult = { name: networkName, action: 'kept' };
+  }
+
+  // Optionally remove Docker images (default: keep — avoids full rebuild next run)
+  const imageResults: CleanResult['images'] = [];
+  if (params.removeImages) {
+    for (const svc of services) {
+      try {
+        await execFileAsync('docker', [...getDockerHostArgs(), 'image', 'rm', svc.build.image], { timeout: 30_000 });
+        imageResults.push({ name: svc.build.image, action: 'removed' });
+      } catch (err) {
+        const msg = (err as Error).message ?? String(err);
+        if (/No such image/i.test(msg)) {
+          imageResults.push({ name: svc.build.image, action: 'not_found' });
+        } else {
+          imageResults.push({ name: svc.build.image, action: 'failed', error: msg });
+        }
+      }
+    }
+  } else {
+    for (const svc of services) {
+      imageResults.push({ name: svc.build.image, action: 'kept' });
+    }
   }
 
   const cleanDuration = Date.now() - cleanStart;
@@ -150,6 +196,7 @@ export async function handleClean(
     containers: containerResults,
     mocks: mockResults,
     network: networkResult,
+    images: imageResults,
     sessionRemoved: true,
   };
 }

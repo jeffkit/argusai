@@ -929,6 +929,8 @@ export interface ActivityEntry {
 export interface SSEMessage {
   event: string;
   data: unknown;
+  /** Optional client-assigned timestamp (ms). Used by argus_subscribe for `since` filtering. */
+  timestamp?: number;
 }
 
 export interface SSEBus {

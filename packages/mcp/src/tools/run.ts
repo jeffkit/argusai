@@ -40,6 +40,9 @@ export interface RunResult {
   warnings?: string[];
 }
 
+/** Default timeout per external runner invocation (5 minutes). */
+const DEFAULT_RUNNER_TIMEOUT_MS = 300_000;
+
 /**
  * Handle the argus_run MCP tool call.
  * Executes all (or filtered) test suites and returns AI-friendly results.
@@ -51,7 +54,7 @@ export interface RunResult {
  * @throws {SessionError} NOT_RUNNING if setup not done, SUITE_NOT_FOUND if filter matches nothing
  */
 export async function handleRun(
-  params: { projectPath: string; filter?: string; parallel?: boolean; maxFailures?: number },
+  params: { projectPath: string; filter?: string; parallel?: boolean; maxFailures?: number; timeout?: number },
   sessionManager: SessionManager,
   formatter: ResultFormatter,
   platform?: PlatformServices,
@@ -82,7 +85,7 @@ export async function handleRun(
     }
   }
 
-  return executeSuites(suites, session, formatter, sessionManager.eventBus, platform, params.parallel, params.maxFailures ?? 20);
+  return executeSuites(suites, session, formatter, sessionManager.eventBus, platform, params.parallel, params.maxFailures ?? 20, params.timeout ?? DEFAULT_RUNNER_TIMEOUT_MS);
 }
 
 /**
@@ -96,7 +99,7 @@ export async function handleRun(
  * @throws {SessionError} NOT_RUNNING if setup not done, SUITE_NOT_FOUND if suiteId not found
  */
 export async function handleRunSuite(
-  params: { projectPath: string; suiteId: string; maxFailures?: number },
+  params: { projectPath: string; suiteId: string; maxFailures?: number; timeout?: number },
   sessionManager: SessionManager,
   formatter: ResultFormatter,
   platform?: PlatformServices,
@@ -116,7 +119,7 @@ export async function handleRunSuite(
     throw new SessionError('SUITE_NOT_FOUND', `Suite "${params.suiteId}" not found in configuration`);
   }
 
-  return executeSuites(suites, session, formatter, sessionManager.eventBus, platform, undefined, params.maxFailures ?? 20);
+  return executeSuites(suites, session, formatter, sessionManager.eventBus, platform, undefined, params.maxFailures ?? 20, params.timeout ?? DEFAULT_RUNNER_TIMEOUT_MS);
 }
 
 async function executeSuites(
@@ -127,6 +130,7 @@ async function executeSuites(
   platform?: PlatformServices,
   parallelOverride?: boolean,
   maxFailures: number = 20,
+  runnerTimeoutMs: number = DEFAULT_RUNNER_TIMEOUT_MS,
 ): Promise<RunResult> {
   const totalStart = Date.now();
   const suiteResults: RunResult['suites'] = [];
@@ -231,7 +235,7 @@ async function executeSuites(
         cwd,
         target,
         env: process.env as Record<string, string>,
-        timeout: 300_000,
+        timeout: runnerTimeoutMs,
       })) {
         events.push(event);
         bus?.emit('test', { event: event.type, data: event });

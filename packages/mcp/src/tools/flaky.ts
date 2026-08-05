@@ -12,6 +12,12 @@ export interface FlakyParams {
   topN?: number;
   minScore?: number;
   suiteId?: string;
+  /**
+   * Override the sliding-window size for flakiness scoring.
+   * Defaults to `history.flakyWindow` from e2e.yaml (10).
+   * Smaller window = recent-biased; larger = more statistical confidence.
+   */
+  window?: number;
 }
 
 export interface FlakyResult {
@@ -35,7 +41,10 @@ export async function handleFlaky(
   const minScore = params.minScore ?? 0.01;
 
   const historyConfig = session.config.history as HistoryConfig | undefined;
-  const flakyWindow = historyConfig?.flakyWindow ?? 10;
+  const yamlWindow = historyConfig?.flakyWindow ?? 10;
+  const flakyWindow = params.window !== undefined
+    ? Math.min(Math.max(params.window, 1), 1000)
+    : yamlWindow;
 
   const detector = new FlakyDetector(session.historyStore, flakyWindow);
 
