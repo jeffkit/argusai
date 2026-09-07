@@ -28,7 +28,8 @@ export { ContainerGuardian } from './container-guardian.js';
 export { PortResolver } from './port-resolver.js';
 
 // Orphan Cleaner
-export { OrphanCleaner } from './orphan-cleaner.js';
+export { OrphanCleaner, removeEmptyManagedNetworks } from './orphan-cleaner.js';
+export type { EmptyNetworkSweepResult, EmptyNetworkSweepOptions } from './orphan-cleaner.js';
 
 // Circuit Breaker
 export { CircuitBreaker } from './circuit-breaker.js';

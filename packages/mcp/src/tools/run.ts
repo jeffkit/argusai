@@ -21,7 +21,16 @@ import { SessionManager, SessionError, resolveContainerName, resolveHostPort } f
 import type { ProjectSession } from '../session.js';
 import type { ResultFormatter } from '../formatters/result-formatter.js';
 import type { PlatformServices } from '../server.js';
-import { handleSetup } from './setup.js';
+import { handleSetup, type SetupResult } from './setup.js';
+import { waitForPort } from 'argusai-core';
+
+/**
+ * Readiness budget for auto-started services that have no configured
+ * healthcheck (issue #11): argus_setup returns as soon as containers are
+ * started, so without this wait the first request steps ran while the
+ * backend was still booting and failed with "fetch failed" within ms.
+ */
+const AUTO_START_READY_TIMEOUT_MS = 60_000;
 
 export interface RunResult {
   status: 'passed' | 'failed';
@@ -136,10 +145,17 @@ export async function handleRunSuite(
  * Matches mock auto-start UX (issue #5): if the session is not `running`, or
  * any required container is missing/stopped, invoke `argus_setup` once instead
  * of letting every case fail with "No such container".
+ *
+ * After an auto-setup, also waits until the started services actually accept
+ * TCP connections (issue #11) — argus_setup returns as soon as containers are
+ * started, and services without a configured healthcheck are otherwise given
+ * no time to boot. Partial setup failures (failed/unhealthy services) are
+ * surfaced as warnings instead of failing silently per case.
  */
 export async function ensureEnvironmentReady(
   session: ProjectSession,
   sessionManager: SessionManager,
+  options?: { readyTimeoutMs?: number },
 ): Promise<string[]> {
   if (session.isTestOnly) return [];
 
@@ -170,9 +186,61 @@ export async function ensureEnvironmentReady(
     ? `Environment state is "${session.state}" (not running)`
     : `Container(s) not running: ${missing.join(', ')}`;
 
-  await handleSetup({ projectPath: session.projectPath }, sessionManager);
+  const setupResult = await handleSetup({ projectPath: session.projectPath }, sessionManager);
 
-  return [`${reason} — auto-started via argus_setup.`];
+  const warnings = [`${reason} — auto-started via argus_setup.`];
+  warnings.push(...await waitForEnvironmentReady(setupResult, options?.readyTimeoutMs));
+  return warnings;
+}
+
+/**
+ * Wait until auto-started services and image-based mocks accept TCP
+ * connections, and report services that setup could not bring up.
+ */
+async function waitForEnvironmentReady(
+  setupResult: SetupResult,
+  timeoutMs: number = AUTO_START_READY_TIMEOUT_MS,
+): Promise<string[]> {
+  const warnings: string[] = [];
+
+  for (const svc of setupResult.services) {
+    if (svc.status === 'failed' || svc.status === 'unhealthy') {
+      warnings.push(
+        `Service "${svc.name}" is ${svc.status} after auto-start${svc.error ? `: ${svc.error}` : ''}`,
+      );
+    }
+  }
+
+  // 'healthy' services already waited for their healthcheck during setup;
+  // 'running' means no healthcheck is configured — nothing else waits for
+  // the app inside to bind its port, so dial it here.
+  const targets: Array<{ kind: 'Service' | 'Mock'; name: string; port: number }> = [];
+  for (const svc of setupResult.services) {
+    if (svc.status !== 'running') continue;
+    const port = svc.ports[0]?.host;
+    if (port) targets.push({ kind: 'Service', name: svc.name, port });
+  }
+  for (const mock of setupResult.mocks) {
+    // In-process mocks are listening by the time setup returns, so this
+    // resolves immediately; image-based mocks are containers that may
+    // still be starting.
+    if (mock.status === 'running') targets.push({ kind: 'Mock', name: mock.name, port: mock.port });
+  }
+
+  if (targets.length === 0) return warnings;
+
+  const results = await Promise.all(
+    targets.map(async t => ({ ...t, ready: await waitForPort(t.port, timeoutMs) })),
+  );
+  for (const r of results) {
+    if (!r.ready) {
+      warnings.push(
+        `${r.kind} "${r.name}" (port ${r.port}) did not accept connections within ` +
+        `${Math.round(timeoutMs / 1000)}s — proceeding, first requests may fail.`,
+      );
+    }
+  }
+  return warnings;
 }
 
 async function executeSuites(

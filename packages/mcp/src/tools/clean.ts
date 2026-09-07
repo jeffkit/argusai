@@ -6,10 +6,12 @@
  * Docker calls at this level for testability.
  */
 
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
   stopContainer,
   removeNetwork,
   findContainersByLabel,
+  removeEmptyManagedNetworks,
   MultiServiceOrchestrator,
 } from 'argusai-core';
 import { SessionManager, SessionError } from '../session.js';
@@ -31,6 +33,15 @@ export interface CleanResult {
     error?: string;
   };
   sessionRemoved: boolean;
+  /**
+   * Empty argusai-managed networks reclaimed beyond the session's own
+   * network (issue #11). Networks whose session died (MCP restart, TTL
+   * expiry) used to linger and exhaust the Docker address pool.
+   */
+  emptyNetworks?: {
+    removed: string[];
+    failed: Array<{ name: string; error: string }>;
+  };
 }
 
 /**
@@ -54,11 +65,19 @@ export async function handleClean(
     networkName = session.networkName;
   } catch (err) {
     if (err instanceof SessionError && err.code === 'SESSION_NOT_FOUND') {
+      // No session means the MCP process restarted or the session expired —
+      // exactly the situation where argusai-managed networks used to leak,
+      // because nothing else remembered them (issue #11). Fall back to a
+      // best-effort sweep of empty managed networks across all projects;
+      // an empty managed network is inert, so removal is safe.
+      const sweep = await removeEmptyManagedNetworks({ eventBus: sessionManager.eventBus })
+        .catch(() => null);
       return {
         containers: [],
         mocks: [],
         network: { name: networkName, action: 'not_found' },
         sessionRemoved: false,
+        ...(sweep ? { emptyNetworks: toSweepSummary(sweep) } : {}),
       };
     }
     throw err;
@@ -142,6 +161,24 @@ export async function handleClean(
   } catch {
     networkResult = { name: networkName, action: 'failed' };
   }
+  if (networkResult.action === 'failed') {
+    // Container endpoints may still be detaching from the network — retry
+    // once before giving up.
+    await sleep(1_000);
+    try {
+      await removeNetwork(networkName);
+      networkResult = { name: networkName, action: 'removed' };
+    } catch {
+      // The empty-network sweep below picks it up on a later clean.
+    }
+  }
+
+  // Sweep empty argusai-managed networks of this project (issue #11) —
+  // covers networks left over from sessions this process never saw.
+  const sweep = await removeEmptyManagedNetworks({
+    project: session.config.project.name,
+    eventBus: bus,
+  }).catch(() => null);
 
   const cleanDuration = Date.now() - cleanStart;
   bus?.emit('clean', { event: 'clean_end', data: { type: 'clean_end', duration: cleanDuration, timestamp: Date.now() } });
@@ -157,5 +194,17 @@ export async function handleClean(
     mocks: mockResults,
     network: networkResult,
     sessionRemoved: true,
+    ...(sweep ? { emptyNetworks: toSweepSummary(sweep) } : {}),
   };
+}
+
+function toSweepSummary(sweep: {
+  removed: Array<{ name: string }>;
+  failed: Array<{ name: string; error: string }>;
+}): CleanResult['emptyNetworks'] {
+  const summary = {
+    removed: sweep.removed.map(r => r.name),
+    failed: sweep.failed.map(f => ({ name: f.name, error: f.error })),
+  };
+  return summary.removed.length > 0 || summary.failed.length > 0 ? summary : undefined;
 }

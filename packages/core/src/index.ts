@@ -65,6 +65,7 @@ export {
   ensureNetwork,
   removeNetwork,
   waitForHealthy,
+  waitForPort,
   isPortInUse,
   isPortInUseSync,
   getContainerInfo,

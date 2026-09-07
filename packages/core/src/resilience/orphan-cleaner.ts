@@ -181,11 +181,20 @@ export class OrphanCleaner {
 
     const orphans = await this.detect();
 
+    // Networks can outlive their containers when a previous cleanup was
+    // interrupted (e.g. MCP restart between clean and network removal).
+    // detect() only reports networks from *other* run-ids, so also sweep
+    // empty ones of this project (issue #11).
+    const sweep = await removeEmptyManagedNetworks({
+      project: this.currentProject,
+      eventBus: this.eventBus,
+    });
+
     if (orphans.length === 0) {
       const result: OrphanCleanupResult = {
         found: [],
-        removed: [],
-        failed: [],
+        removed: sweep.removed,
+        failed: sweep.failed,
         duration: 0,
       };
       this.emitEndEvent(result);
@@ -193,6 +202,8 @@ export class OrphanCleaner {
     }
 
     const result = await this.cleanup(orphans);
+    result.removed.push(...sweep.removed);
+    result.failed.push(...sweep.failed);
 
     this.emitEndEvent(result);
     return result;
@@ -237,4 +248,122 @@ function extractLabel(labelsStr: string, key: string): string | null {
     }
   }
   return null;
+}
+
+// =====================================================================
+// Empty Managed Network Sweep
+// =====================================================================
+
+export interface EmptyNetworkSweepResult {
+  removed: OrphanResource[];
+  failed: Array<OrphanResource & { error: string }>;
+  /** Networks left alone (still has containers, or younger than the grace period). */
+  skipped: string[];
+}
+
+export interface EmptyNetworkSweepOptions {
+  /** Restrict the sweep to one project's networks. Omit to sweep all projects. */
+  project?: string;
+  /**
+   * Skip networks created less than this many ms ago, so a concurrent setup
+   * that has created its network but not attached containers yet is not
+   * disrupted. Networks without a `argusai.created-at` label are not
+   * grace-checked (their emptiness alone decides). Default: 60s.
+   */
+  graceMs?: number;
+  eventBus?: SSEBus;
+}
+
+/**
+ * Remove argusai-managed Docker networks that have no containers attached.
+ *
+ * `argus-clean` only removes the network of a live session; networks whose
+ * session died (MCP restart, TTL expiry) lingered forever and gradually
+ * exhausted the Docker address pool (issue #11). An empty managed network is
+ * inert by definition, so removing it is always safe.
+ */
+export async function removeEmptyManagedNetworks(
+  options: EmptyNetworkSweepOptions = {},
+): Promise<EmptyNetworkSweepResult> {
+  const { project, graceMs = 60_000, eventBus } = options;
+  const result: EmptyNetworkSweepResult = { removed: [], failed: [], skipped: [] };
+
+  let output: string;
+  try {
+    const args = [
+      'network', 'ls',
+      '--filter', 'label=argusai.managed=true',
+      '--format', '{{.ID}}\t{{.Name}}\t{{.Labels}}',
+    ];
+    if (project) args.push('--filter', `label=argusai.project=${project}`);
+    output = await dockerExec(args);
+  } catch {
+    // Docker unreachable — nothing to sweep
+    return result;
+  }
+
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    const [id, name, labels] = line.split('\t');
+    if (!id || !name) continue;
+    const netName = name.trim();
+
+    const createdAt = extractLabel(labels ?? '', 'argusai.created-at');
+    if (createdAt) {
+      const age = Date.now() - Date.parse(createdAt);
+      if (Number.isFinite(age) && age < graceMs) {
+        result.skipped.push(netName);
+        continue;
+      }
+    }
+
+    let containerCount = -1;
+    try {
+      const inspectOut = await dockerExec([
+        'network', 'inspect', netName, '--format', '{{len .Containers}}',
+      ]);
+      containerCount = parseInt(inspectOut.trim(), 10);
+    } catch {
+      // Inspect failure — treat as non-empty rather than risk removing a
+      // network we cannot verify.
+    }
+    if (containerCount !== 0) {
+      result.skipped.push(netName);
+      continue;
+    }
+
+    const resource: OrphanResource = {
+      type: 'network',
+      name: netName,
+      id: id.trim(),
+      project: extractLabel(labels ?? '', 'argusai.project') ?? project ?? 'unknown',
+      runId: extractLabel(labels ?? '', 'argusai.run-id') ?? 'unknown',
+      createdAt: createdAt ?? 'unknown',
+    };
+
+    eventBus?.emit('resilience', {
+      event: 'cleanup_resource',
+      data: { type: 'cleanup_resource', resourceType: 'network', name: netName, action: 'removing', timestamp: Date.now() },
+    });
+
+    try {
+      await dockerExec(['network', 'rm', netName]);
+      result.removed.push(resource);
+      eventBus?.emit('resilience', {
+        event: 'cleanup_resource',
+        data: { type: 'cleanup_resource', resourceType: 'network', name: netName, action: 'removed', timestamp: Date.now() },
+      });
+    } catch (err) {
+      result.failed.push({
+        ...resource,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      eventBus?.emit('resilience', {
+        event: 'cleanup_resource',
+        data: { type: 'cleanup_resource', resourceType: 'network', name: netName, action: 'failed', timestamp: Date.now() },
+      });
+    }
+  }
+
+  return result;
 }

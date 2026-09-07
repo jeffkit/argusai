@@ -6,6 +6,7 @@
  * executes declarative browser actions, and evaluates page assertions.
  */
 
+import { existsSync } from 'node:fs';
 import type { BrowserAction, PageExpect, VariableContext } from './types.js';
 import { parseTime } from './yaml-engine.js';
 import type { Browser, BrowserContext, Page } from 'playwright';
@@ -39,7 +40,16 @@ export class BrowserSession {
     if (this.page) return this.page;
 
     const pw = await importPlaywright();
-    this.browser = await pw.chromium.launch({ headless: this.headless });
+    try {
+      this.browser = await pw.chromium.launch({ headless: this.headless });
+    } catch (err) {
+      // executablePath() can pass while launch still fails (version drift,
+      // partial download) — keep the message actionable either way.
+      if (/Executable doesn't exist/i.test(String((err as Error | undefined)?.message ?? err))) {
+        throw new Error(`Chromium browser binary is missing. ${PLAYWRIGHT_INSTALL_GUIDE}`);
+      }
+      throw err;
+    }
     this.context = await this.browser.newContext({
       baseURL: this.baseUrl,
       viewport: { width: 1280, height: 720 },
@@ -454,29 +464,79 @@ export class BrowserSession {
 // Dynamic Playwright Import
 // =====================================================================
 
-interface PlaywrightModule {
+export interface PlaywrightModule {
   chromium: {
     launch(options?: { headless?: boolean }): Promise<Browser>;
+    executablePath(): string;
   };
 }
 
+/**
+ * One-shot install guide covering BOTH the npm module and the browser
+ * binaries — playwright ships them as two separate downloads, and the
+ * module is an optional peer dependency that `npm i -g argusai-mcp`
+ * does not pull in (issue #11).
+ */
+const PLAYWRIGHT_INSTALL_GUIDE =
+  'Install module and browser binaries in one go: ' +
+  '`npm install -g playwright && npx playwright install chromium` ' +
+  '(or project-local: `npm install playwright && npx playwright install chromium`).';
+
 let playwrightModule: PlaywrightModule | null = null;
+
+/**
+ * @internal Test seam — resolves the playwright module, returning `null` when
+ * neither `playwright` nor `playwright-core` is installed. Overridden in unit
+ * tests to simulate missing modules/browsers deterministically.
+ */
+export const playwrightTestHooks = {
+  async loadModule(): Promise<PlaywrightModule | null> {
+    try {
+      return await import('playwright') as PlaywrightModule;
+    } catch {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        return await (Function('return import("playwright-core")')() as Promise<PlaywrightModule>);
+      } catch {
+        return null;
+      }
+    }
+  },
+};
+
+/** @internal Reset the cached module between tests. */
+export function resetPlaywrightModuleCache(): void {
+  playwrightModule = null;
+}
 
 async function importPlaywright(): Promise<PlaywrightModule> {
   if (playwrightModule) return playwrightModule;
 
-  try {
-    playwrightModule = await import('playwright') as PlaywrightModule;
-    return playwrightModule;
-  } catch {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      playwrightModule = await (Function('return import("playwright-core")')() as Promise<PlaywrightModule>);
-      return playwrightModule!;
-    } catch {
-      throw new Error(
-        'Playwright is required for browser test steps. Install it with: npm install playwright',
-      );
-    }
+  const mod = await playwrightTestHooks.loadModule();
+
+  if (!mod) {
+    throw new Error(
+      'Playwright is required for browser test steps but the module is not installed. ' +
+      PLAYWRIGHT_INSTALL_GUIDE,
+    );
   }
+
+  // The npm module alone is not enough — browser binaries are a separate
+  // download. Detect both up front so users see ONE error with the complete
+  // fix instead of module-error → install → binary-error → install again.
+  let executablePath: string | undefined;
+  try {
+    executablePath = mod.chromium.executablePath();
+  } catch {
+    // Older builds may not expose executablePath — let launch() report.
+  }
+  if (executablePath && !existsSync(executablePath)) {
+    throw new Error(
+      `Playwright module is installed but the Chromium browser binary is missing (expected at ${executablePath}). ` +
+      PLAYWRIGHT_INSTALL_GUIDE,
+    );
+  }
+
+  playwrightModule = mod;
+  return mod;
 }

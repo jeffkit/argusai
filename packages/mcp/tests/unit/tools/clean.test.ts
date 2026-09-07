@@ -14,10 +14,11 @@ vi.mock('argusai-core', async (importOriginal) => {
     stopContainer: vi.fn().mockResolvedValue(undefined),
     removeNetwork: vi.fn().mockResolvedValue(undefined),
     findContainersByLabel: vi.fn().mockResolvedValue([]),
+    removeEmptyManagedNetworks: vi.fn().mockResolvedValue({ removed: [], failed: [], skipped: [] }),
   };
 });
 
-const { stopContainer, findContainersByLabel } = await import('argusai-core');
+const { stopContainer, findContainersByLabel, removeEmptyManagedNetworks } = await import('argusai-core');
 
 function setupSession(manager: SessionManager, projectPath = '/test/project'): void {
   const config: E2EConfig = {
@@ -81,5 +82,51 @@ describe('handleClean', () => {
 
     expect(result.sessionRemoved).toBe(true);
     expect(result.containers.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('should sweep empty managed networks even when no session exists (issue #11)', async () => {
+    vi.mocked(removeEmptyManagedNetworks).mockResolvedValue({
+      removed: [{
+        type: 'network', name: 'argusai-leaked-network', id: 'n1',
+        project: 'leaked', runId: 'old-run', createdAt: '2026-01-01T00:00:00Z',
+      }],
+      failed: [],
+      skipped: [],
+    });
+
+    const result = await handleClean({ projectPath: '/nonexistent' }, sessionManager);
+
+    expect(result.sessionRemoved).toBe(false);
+    expect(result.network.action).toBe('not_found');
+    expect(result.emptyNetworks?.removed).toEqual(['argusai-leaked-network']);
+    expect(removeEmptyManagedNetworks).toHaveBeenCalledTimes(1);
+  });
+
+  it('should sweep empty managed networks of the project on a normal clean (issue #11)', async () => {
+    setupSession(sessionManager);
+    vi.mocked(removeEmptyManagedNetworks).mockResolvedValue({
+      removed: [],
+      failed: [{ type: 'network', name: 'argusai-busy-network', id: 'n2', project: 'test', runId: 'r', createdAt: '', error: 'in use' }],
+      skipped: [],
+    });
+
+    const result = await handleClean({ projectPath: '/test/project' }, sessionManager);
+
+    expect(removeEmptyManagedNetworks).toHaveBeenCalledWith(
+      expect.objectContaining({ project: 'test' }),
+    );
+    expect(result.emptyNetworks?.removed).toEqual([]);
+    expect(result.emptyNetworks?.failed).toEqual([{ name: 'argusai-busy-network', error: 'in use' }]);
+  });
+
+  it('should omit emptyNetworks when the sweep found nothing', async () => {
+    setupSession(sessionManager);
+    vi.mocked(removeEmptyManagedNetworks).mockResolvedValue({
+      removed: [], failed: [], skipped: ['argusai-p-network'],
+    });
+
+    const result = await handleClean({ projectPath: '/test/project' }, sessionManager);
+
+    expect(result.emptyNetworks).toBeUndefined();
   });
 });

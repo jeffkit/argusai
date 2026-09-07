@@ -8,7 +8,7 @@
 
 import { spawn, execFileSync, execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createServer } from 'node:net';
+import { createServer, createConnection } from 'node:net';
 import type { BuildEvent, ContainerStatus, ContainerEvent } from './types.js';
 
 const execFileAsync = promisify(execFileCb);
@@ -437,6 +437,46 @@ export async function waitForHealthy(name: string, timeoutMs = 120_000): Promise
     }
 
     await sleep(2000);
+  }
+
+  return false;
+}
+
+/**
+ * Wait until a TCP port accepts connections by repeatedly dialing it.
+ *
+ * Readiness signal for containers without a configured healthcheck: the
+ * port only opens once the application inside the container is actually
+ * listening, which is stronger than a fixed sleep.
+ *
+ * @param port - Host port to dial
+ * @param timeoutMs - Maximum time to wait in milliseconds (default: 60000)
+ * @param intervalMs - Delay between attempts in milliseconds (default: 500)
+ * @param host - Host to dial (default: 127.0.0.1)
+ * @returns `true` once the port accepted a connection, `false` on timeout
+ */
+export async function waitForPort(
+  port: number,
+  timeoutMs = 60_000,
+  intervalMs = 500,
+  host = '127.0.0.1',
+): Promise<boolean> {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const connected = await new Promise<boolean>((resolve) => {
+      const socket = createConnection({ host, port });
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once('error', () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+    if (connected) return true;
+    await sleep(intervalMs);
   }
 
   return false;

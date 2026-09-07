@@ -3,8 +3,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import net from 'node:net';
 import { SessionManager, SessionError } from '../../../src/session.js';
-import { handleRun, handleRunSuite } from '../../../src/tools/run.js';
+import { handleRun, handleRunSuite, ensureEnvironmentReady } from '../../../src/tools/run.js';
 import { ResultFormatter } from '../../../src/formatters/result-formatter.js';
 import type { E2EConfig } from 'argusai-core';
 import type { TestEvent } from 'argusai-core';
@@ -299,5 +300,138 @@ describe('handleRunSuite', () => {
       sessionManager,
       formatter,
     )).rejects.toThrow(SessionError);
+  });
+});
+
+describe('ensureEnvironmentReady readiness wait (issue #11)', () => {
+  let sessionManager: SessionManager;
+  let formatter: ResultFormatter;
+
+  beforeEach(() => {
+    sessionManager = new SessionManager();
+    formatter = new ResultFormatter();
+    vi.clearAllMocks();
+    vi.mocked(isContainerRunning).mockResolvedValue(true);
+  });
+
+  function readinessConfig(): E2EConfig {
+    return {
+      version: '1',
+      project: { name: 'readiness' },
+      service: {
+        build: { dockerfile: 'Dockerfile', context: '.', image: 'test:latest' },
+        container: { name: 'ready-app', ports: ['3000:3000'] },
+      },
+      tests: {
+        suites: [{ id: 'api', name: 'API Tests', file: 'tests/api.yaml', runner: 'yaml' }],
+      },
+      network: { name: 'test-net' },
+    };
+  }
+
+  it('should wait for a healthcheck-less service to accept TCP connections before running cases', async () => {
+    sessionManager.create('/test/readiness', readinessConfig(), '/test/readiness/e2e.yaml');
+    vi.mocked(isContainerRunning).mockResolvedValue(false);
+
+    // Reserve an ephemeral port, release it, then re-bind it after a "boot"
+    // delay once handleSetup has already returned.
+    const server = net.createServer(sock => { sock.end(); });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as net.AddressInfo).port;
+    await new Promise<void>(resolve => server.close(() => resolve()));
+
+    let gotConnection = false;
+    const listening = net.createServer(sock => { gotConnection = true; sock.end(); });
+    setTimeout(() => listening.listen(port, '127.0.0.1'), 600);
+
+    vi.mocked(handleSetup).mockImplementation(async (params: { projectPath: string }) => {
+      sessionManager.transition(params.projectPath, 'built');
+      sessionManager.transition(params.projectPath, 'running');
+      return {
+        network: { name: 'test-net', created: true },
+        services: [{
+          name: 'app',
+          containerId: 'c1',
+          status: 'running' as const, // no healthcheck — setup does not wait for it
+          ports: [{ host: port, container: 3000 }],
+        }],
+        mocks: [],
+        totalDuration: 10,
+      };
+    });
+
+    vi.mocked(executeYAMLSuite).mockImplementation(async function* () {
+      yield { type: 'suite_start', suite: 'API Tests', timestamp: Date.now() };
+      yield { type: 'case_pass', suite: 'API Tests', name: 'test 1', duration: 50, timestamp: Date.now() };
+      yield { type: 'suite_end', suite: 'API Tests', passed: 1, failed: 0, skipped: 0, duration: 50, timestamp: Date.now() };
+    } as any);
+
+    try {
+      const result = await handleRun({ projectPath: '/test/readiness' }, sessionManager, formatter);
+
+      expect(result.status).toBe('passed');
+      // The server-side 'connection' event is a macrotask — the client-side
+      // dial resolves as a microtask first. Give the loop one pass.
+      await new Promise(resolve => setTimeout(resolve, 50));
+      // The readiness wait must have dialed the port before any case ran
+      expect(gotConnection).toBe(true);
+    } finally {
+      listening.close();
+    }
+  });
+
+  it('should warn when an auto-started service port never opens', async () => {
+    sessionManager.create('/test/never-ready', readinessConfig(), '/test/never-ready/e2e.yaml');
+    vi.mocked(isContainerRunning).mockResolvedValue(false);
+
+    vi.mocked(handleSetup).mockImplementation(async (params: { projectPath: string }) => {
+      sessionManager.transition(params.projectPath, 'built');
+      sessionManager.transition(params.projectPath, 'running');
+      return {
+        network: { name: 'test-net', created: true },
+        services: [{
+          name: 'stuck',
+          containerId: 'c1',
+          status: 'running' as const,
+          // port 1 on localhost refuses connections immediately
+          ports: [{ host: 1, container: 3000 }],
+        }],
+        mocks: [],
+        totalDuration: 10,
+      };
+    });
+
+    const session = sessionManager.getOrThrow('/test/never-ready');
+    const warnings = await ensureEnvironmentReady(session, sessionManager, { readyTimeoutMs: 400 });
+
+    expect(warnings.some(w => w.includes('auto-started'))).toBe(true);
+    expect(warnings.some(w => w.includes('"stuck"') && w.includes('did not accept connections'))).toBe(true);
+  });
+
+  it('should surface failed services from setup as warnings', async () => {
+    sessionManager.create('/test/setup-fail', readinessConfig(), '/test/setup-fail/e2e.yaml');
+    vi.mocked(isContainerRunning).mockResolvedValue(false);
+
+    vi.mocked(handleSetup).mockImplementation(async (params: { projectPath: string }) => {
+      sessionManager.transition(params.projectPath, 'built');
+      sessionManager.transition(params.projectPath, 'running');
+      return {
+        network: { name: 'test-net', created: true },
+        services: [{
+          name: 'broken',
+          containerId: '',
+          status: 'failed' as const,
+          ports: [],
+          error: 'image not found',
+        }],
+        mocks: [],
+        totalDuration: 10,
+      };
+    });
+
+    const session = sessionManager.getOrThrow('/test/setup-fail');
+    const warnings = await ensureEnvironmentReady(session, sessionManager, { readyTimeoutMs: 200 });
+
+    expect(warnings.some(w => w.includes('Service "broken" is failed after auto-start: image not found'))).toBe(true);
   });
 });
