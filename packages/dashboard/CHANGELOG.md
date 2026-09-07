@@ -1,5 +1,12 @@
 # argusai-dashboard
 
+## 0.15.5
+
+### Patch Changes
+
+- Updated dependencies [cf1ef24]
+  - argusai-core@0.15.5
+
 ## 0.15.4
 
 ### Patch Changes
