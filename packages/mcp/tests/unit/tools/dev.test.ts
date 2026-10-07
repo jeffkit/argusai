@@ -20,6 +20,17 @@ vi.mock('argusai-core', async (importOriginal) => {
     stopContainer: vi.fn().mockResolvedValue(undefined),
     removeNetwork: vi.fn().mockResolvedValue(undefined),
     isPortInUse: vi.fn().mockResolvedValue(false),
+    // Port-conflict resolution dials real host ports, which makes this unit
+    // test fail whenever an unrelated process holds e.g. 8080. Stub it to a
+    // pass-through so the test only exercises handleDev.
+    PortResolver: class {
+      async resolveServicePorts(
+        services: unknown[],
+        mocks: Record<string, unknown>,
+      ): Promise<{ services: unknown[]; mocks: Record<string, unknown>; portMappings: never[] }> {
+        return { services, mocks, portMappings: [] };
+      }
+    },
     findContainersByLabel: vi.fn().mockResolvedValue([]),
     getContainerStatus: vi.fn().mockResolvedValue('running'),
     createMockServer: vi.fn().mockReturnValue({
