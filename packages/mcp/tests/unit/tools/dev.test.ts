@@ -41,6 +41,14 @@ vi.mock('argusai-core', async (importOriginal) => {
       if (t.endsWith('s')) return parseInt(t) * 1000;
       return parseInt(t);
     }),
+    // PortResolver binds core's internal docker-engine directly, so the
+    // isPortInUse mock above never reaches it — without this stub, fixtures
+    // get reassigned whenever the dev machine already uses 8080/9081.
+    PortResolver: class {
+      async resolveServicePorts(services: unknown[], mocks: Record<string, unknown>) {
+        return { services, mocks, portMappings: [] };
+      }
+    },
   };
 });
 
