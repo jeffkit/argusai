@@ -35,7 +35,7 @@
     "test:run": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.39.0"
   },
   "peerDependencies": {

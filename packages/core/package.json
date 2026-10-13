@@ -40,7 +40,7 @@
     "@readme/openapi-parser": "^4.0.0",
     "ajv": "^8.18.0",
     "argusai-core-storage": "workspace:^",
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^16.4.0",
     "drizzle-orm": "^0.39.0",
     "fastify": "^5.2.0",
