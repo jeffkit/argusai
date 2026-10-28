@@ -32,7 +32,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          # 22：better-sqlite3@13 声明 engines >=22，Node 20 上 vitest worker
+          # 装载 native 模块直接崩（"Worker exited unexpectedly" ×6，7f043e5 实证）
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
           # pnpm is installed in the next step; rely on the explicit cache below.
           package-manager-cache: false
