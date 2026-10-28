@@ -51,6 +51,12 @@ jobs:
           key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: ${{ runner.os }}-pnpm-
 
+      # better-sqlite3@13 tarball 带 binding.gyp，pnpm 会自动合成 `node-gyp rebuild`
+      # 作为 install 脚本（哪怕包内已内置全平台 prebuilds、根本无需编译）；runner 上
+      # 没有 node-gyp 命令，装依赖直接死在这里（219fbcd 起 Release & Publish 连红根因）。
+      - name: Install node-gyp
+        run: npm install -g node-gyp
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
